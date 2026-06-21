@@ -1,8 +1,9 @@
 # TokenWatt
 
 [![CI](https://github.com/mmmugh/tokenwatt/actions/workflows/ci.yml/badge.svg)](https://github.com/mmmugh/tokenwatt/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/tokenwatt)](https://pypi.org/project/tokenwatt/)
+[![Python](https://img.shields.io/pypi/pyversions/tokenwatt)](https://pypi.org/project/tokenwatt/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Python](https://img.shields.io/badge/python-3.10--3.14-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS_Apple_Silicon-lightgrey)
 
 **Know what your local LLM inference actually costs you in electricity — per model, per request, on Apple Silicon. No sudo.**
@@ -46,10 +47,8 @@ you which regime you're actually in — honestly, in both directions.
 
 ## Install
 
-Not yet on PyPI — install from source:
-
 ```bash
-uv tool install git+https://github.com/mmmugh/tokenwatt     # or, from a clone: uv tool install .
+uv tool install tokenwatt        # or:  uvx tokenwatt  ·  pip install tokenwatt
 ```
 
 ## Use
