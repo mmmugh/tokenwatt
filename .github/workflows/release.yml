@@ -1,8 +1,8 @@
 name: Release
 
 # Publish to PyPI on a version tag (e.g. `v0.2.0`), via PyPI Trusted Publishing (OIDC — no token).
-# Requires a PyPI "(pending) publisher" configured for: repo mmmugh/tokenwatt, workflow `release.yml`.
-# If that publisher specifies an Environment name, add a matching `environment:` to the job below.
+# Requires a PyPI "(pending) publisher" configured for: repo mmmugh/tokenwatt, workflow `release.yml`,
+# Environment `pypi` — matched by the job's `environment:` below.
 on:
   push:
     tags: ["v*"]
@@ -11,6 +11,9 @@ jobs:
   pypi-publish:
     name: Build & publish to PyPI
     runs-on: ubuntu-latest          # the wheel is pure-Python; no Apple Silicon needed to build
+    environment:
+      name: pypi                    # must match the Environment on the PyPI trusted publisher
+      url: https://pypi.org/project/tokenwatt/
     permissions:
       id-token: write               # required for Trusted Publishing (OIDC)
     steps:
