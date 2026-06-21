@@ -1,0 +1,27 @@
+# tokenwatt.yaml — run:  tokenwatt serve -c tw.yaml
+# Every key is optional. With NO config, `tokenwatt serve` still boots and measures
+# (port 7000, ~/.tokenwatt/ledger.sqlite, estimated rate, catch-all to :8080).
+
+port: 7000
+host: 127.0.0.1
+ledger: ~/.tokenwatt/ledger.sqlite
+
+rate:
+  flat_usd_per_kwh: 0.31      # omit -> costs labeled 'estimated'
+
+# model -> upstream routes. Match precedence: exact > longest-prefix/glob > '*';
+# first-in-list breaks ties. The route `name` is how the ledger/report groups.
+routes:
+  - name: m1
+    type: text
+    upstream: http://127.0.0.1:8080
+    match: [m1, "mlx-community/Qwen3-Coder*", "mlx-community/Qwen3-*"]
+  - name: v1
+    type: vision
+    dialect: openai            # mlx-vlm speaks openai + anthropic; used for token extraction in M1b
+    upstream: http://127.0.0.1:8081
+    match: [v1, "mlx-community/Qwen3-VL-*", "*VL*"]
+  - name: embeddings
+    type: embeddings
+    upstream: http://127.0.0.1:8080
+    match: [embeddings, "*-embed*", "text-embedding-*"]
