@@ -14,5 +14,8 @@ venv/
 *.sqlite-*
 .tokenwatt/
 
+# leak-scan personal deny-list — literal names/employer must never be committed
+.githooks/leak-patterns.local
+
 # macOS
 .DS_Store

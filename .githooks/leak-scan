@@ -1,0 +1,63 @@
+#!/bin/sh
+# tokenwatt leak-scan: read a unified diff on stdin; exit 1 if any ADDED line
+# (or added file PATH) matches a deny pattern, 0 otherwise. Used by the
+# pre-commit and pre-push hooks.
+#
+# Scope on purpose:
+#   - ADDED lines only. Removing a leak (a '-' line) or an unchanged context line
+#     is never blocked — otherwise you couldn't scrub one out.
+#   - Added file PATHS are scanned too (a leak can hide in a new/renamed filename).
+#   - Generic shapes (leak-patterns) match CASE-SENSITIVELY, so the lowercase
+#     '/users/' REST route is not flagged; personal literals (leak-patterns.local)
+#     match case-INSENSITIVELY, so an employer name matches in any casing.
+#   - Known blind spot (fail loud, not silent): binary blobs produce no '+' lines,
+#     so a secret inside a committed binary is NOT seen. Don't commit binaries with
+#     secrets; *.sqlite is already gitignored.
+#
+# Patterns: one ERE per line; whole-line '#' comments and blanks ignored.
+#   leak-patterns        tracked, generic shapes only (SAFE to publish)
+#   leak-patterns.local  untracked, your personal literals (NEVER committed)
+# Override either path with TW_LEAK_PATTERNS / TW_LEAK_PATTERNS_LOCAL (tests do).
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PATTERNS="${TW_LEAK_PATTERNS:-$here/leak-patterns}"
+PATTERNS_LOCAL="${TW_LEAK_PATTERNS_LOCAL:-$here/leak-patterns.local}"
+
+diff=$(mktemp); work=$(mktemp); pg=$(mktemp); pl=$(mktemp)
+trap 'rm -f "$diff" "$work" "$pg" "$pl"' EXIT
+
+cat > "$diff"
+
+# ADDED content (hunk-aware: only in-hunk '+' lines, strip the leading '+';
+# never the pre-hunk '+++'/'---' file headers or '-'/context lines). Robust to
+# content lines that themselves begin with '+'.
+awk '/^@@/{inhunk=1;next} /^[+ -]/{if(inhunk&&substr($0,1,1)=="+")print substr($0,2);next} {inhunk=0}' "$diff" > "$work"
+
+# ADDED file paths (new-file / rename / copy targets).
+grep -E '^\+\+\+ b/|^rename to |^copy to ' "$diff" 2>/dev/null \
+  | sed -E -e 's|^\+\+\+ b/||' -e 's|^rename to ||' -e 's|^copy to ||' >> "$work" || true
+
+[ -s "$work" ] || exit 0
+
+matched=""
+if [ -f "$PATTERNS" ]; then
+  sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$PATTERNS" > "$pg"
+  if [ -s "$pg" ]; then
+    matched=$(grep -E -f "$pg" "$work" || true)
+  fi
+fi
+if [ -z "$matched" ] && [ -f "$PATTERNS_LOCAL" ]; then
+  sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$PATTERNS_LOCAL" > "$pl"
+  if [ -s "$pl" ]; then
+    matched=$(grep -E -i -f "$pl" "$work" || true)
+  fi
+fi
+
+if [ -n "$matched" ]; then
+  echo "tokenwatt leak-scan: BLOCKED — added content matches a deny pattern:" >&2
+  printf '%s\n' "$matched" | sed 's/^/    /' >&2
+  echo "  Patterns: $PATTERNS (+ $PATTERNS_LOCAL if present)" >&2
+  exit 1
+fi
+exit 0

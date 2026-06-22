@@ -3,6 +3,13 @@
 # Starts at 0.1.0 (seeded). Bypass for a commit with: git commit --no-verify
 set -e
 
+# --- leak guard: refuse to commit added content matching a deny pattern -------
+HOOK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if ! git diff --cached --no-color -U0 | "$HOOK_DIR/leak-scan"; then
+  echo "pre-commit: leak-scan blocked this commit (see above). Override: git commit --no-verify" >&2
+  exit 1
+fi
+
 VERSION_FILE="VERSION"
 [ -f "$VERSION_FILE" ] || printf '0.1.0\n' > "$VERSION_FILE"
 

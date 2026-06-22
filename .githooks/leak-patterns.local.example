@@ -1,0 +1,14 @@
+# Copy this file to  leak-patterns.local  (which is gitignored) and add the
+# literal strings that must NEVER reach this public repo: employer name,
+# internal project codenames, a private hostname, etc.
+#
+# One ERE per line; matched case-insensitively. Whole-line '#' comments and
+# blank lines are ignored. Do NOT list strings that are intentionally public
+# (your name in LICENSE/pyproject, your commit email) — that would block honest
+# commits to those files.
+#
+# Examples (replace with your own, then delete these):
+# Acme Corporation
+# Acme-Corporation
+# project-bluebird
+# 10\.0\.0\.42
