@@ -70,6 +70,43 @@ A single `--upstream` shortcut works too, with no config file:
 tokenwatt serve --upstream http://127.0.0.1:8080 --rate 0.31
 ```
 
+## Routing
+
+`serve` forwards each request to the backend whose route matches the request's
+`model` id — **exact > longest glob > `*` catch-all**:
+
+```yaml
+routes:
+  - name: mlx
+    type: text                       # text | vision | embeddings (request classification)
+    upstream: http://127.0.0.1:8080
+    match: ["qwen3.6-27b", "mlx-community/*"]
+  - name: lmstudio
+    type: text
+    upstream: http://127.0.0.1:1234
+    match: ["*"]                     # catch-all fallback
+```
+
+### Dynamic discovery
+
+Maintaining `match` patterns by hand gets tedious when you swap models. Turn on
+discovery and routing follows **what's actually loaded** — TokenWatt polls each
+upstream and sends a request to wherever its model is currently served, so an
+mlx-tui slot swap or an `lms load` needs no config edit and no restart:
+
+```yaml
+discovery:
+  enabled: true                      # default false
+```
+
+`routes` remain the fallback (for a model not loaded anywhere) and supply the
+upstream list + per-upstream `type`. One wrinkle it handles for you: backends
+disagree on `/v1/models` — mlx-openai-server lists its one *loaded* model, but
+LM Studio lists its whole on-disk *catalog*, so discovery reads LM Studio's
+`/api/v0/models` load state instead. For a backend whose `/v1/models` is itself a
+catalog (e.g. an mlx-vlm vision server), add `discover: false` to its route to
+keep it on the static pattern. `tokenwatt doctor` flags any that need it.
+
 ## Doctor
 
 `tokenwatt doctor` health-checks the whole setup in one shot — for a quick "is it
@@ -105,8 +142,8 @@ Ollama, LM Studio, llama.cpp…) so response bodies are byte-identical to hittin
 directly; brackets
 the request with Apple IOReport per-rail SoC energy (sudoless); subtracts a rolling idle baseline;
 books model-load (cold-start) energy to a separate row; classifies the request type (text / vision /
-embedding) and counts tokens from the backend's own usage when available; prices it at your flat or
-time-of-use rate; and logs a per-request row — with a `request_id` that ties each cost row to a
+embedding) and counts tokens from the backend's own usage when available; prices it at your flat
+utility rate; and logs a per-request row — with a `request_id` that ties each cost row to a
 structured JSONL operations log.
 
 It is a *meter*, not a gateway: no API key, no rewriting, no buffering. Streaming, tool calls,

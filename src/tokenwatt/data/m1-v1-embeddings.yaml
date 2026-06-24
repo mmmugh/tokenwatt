@@ -25,3 +25,12 @@ routes:
     type: embeddings
     upstream: http://127.0.0.1:8080
     match: [embeddings, "*-embed*", "text-embedding-*"]
+
+# Optional dynamic routing. With enabled:true, routing follows what's actually
+# loaded — TokenWatt polls each upstream and routes to wherever the model is
+# currently served (an mlx-tui slot swap or `lms load` needs no edit here); the
+# routes above stay the fallback. For a backend whose /v1/models is a catalog
+# rather than what's loaded (e.g. an mlx-vlm vision server), add `discover: false`
+# to its route so discovery skips it. `tokenwatt doctor` flags any that need it.
+# discovery:
+#   enabled: true
