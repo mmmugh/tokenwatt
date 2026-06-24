@@ -61,6 +61,7 @@ tokenwatt serve -c tokenwatt.yaml      # one port in front of your local backend
 tokenwatt report                       # today/month $, per-model $/Mtok and J/token
 tokenwatt compare                      # your electricity vs named cloud prices, for the same tokens
 tokenwatt wrap                         # a shareable "my inference bill" card
+tokenwatt doctor                       # health-check config, proxy, upstreams, routing, ledger, meter
 ```
 
 A single `--upstream` shortcut works too, with no config file:
@@ -68,6 +69,34 @@ A single `--upstream` shortcut works too, with no config file:
 ```bash
 tokenwatt serve --upstream http://127.0.0.1:8080 --rate 0.31
 ```
+
+## Doctor
+
+`tokenwatt doctor` health-checks the whole setup in one shot — for a quick "is it
+wired right?" and for bug reports.
+
+```text
+$ tokenwatt doctor
+config:    ✓ load: 3 route(s); discovery on
+proxy:     ✓ listening: reachable on 127.0.0.1:7000
+ledger:    ✓ open: ~/.tokenwatt/ledger.sqlite (2517 request rows)
+metering:  ✓ meter: energy accumulating (+19.48 J in 0.4s, no sudo)
+upstream:  ✓ http://127.0.0.1:1234: LM Studio: (nothing loaded)
+           ✓ http://127.0.0.1:8080: serving: qwen3.6-27b
+healthy — 6 ok, 0 warn, 0 fail
+```
+
+It checks the **config** (parse + a warning if no rate is set), the **proxy** port,
+**every upstream** (what each is actually serving — including LM Studio's loaded
+state via `/api/v0/models` vs the full `/v1/models` catalog), **routing**
+(model-on-two-upstreams collisions; catalog backends that should set
+`discover: false`), the **ledger** (writable + schema + row count), and the
+**sudoless energy meter** (confirms a live reading — TokenWatt's whole point).
+
+- `--json` — machine-readable output, for pasting into an issue.
+- `--fix` — apply only safe fixes (create the ledger directory, scaffold a missing
+  config); never touches ledger data or restarts anything.
+- Exits non-zero when something is broken, so it drops into CI / health probes.
 
 ## What it does
 
