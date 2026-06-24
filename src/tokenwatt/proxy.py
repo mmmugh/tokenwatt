@@ -31,7 +31,7 @@ _DROP = {"content-length", "transfer-encoding", "connection", "host"}
 def create_app(*, router: Router, meter: EnergyMeter, idle: IdleBaseline,
                ledger: Ledger, rate: FlatRate, client: httpx.AsyncClient,
                detector: ColdStartDetector,
-               serialize_lock=None,
+               serialize_lock=None, discovery=None,
                _label_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
                lifespan=None) -> Starlette:
 
@@ -46,7 +46,16 @@ def create_app(*, router: Router, meter: EnergyMeter, idle: IdleBaseline,
         is_stream = bool(req_json.get("stream"))
         req_type = classify_request(path, req_json)
 
-        route = router.resolve(model)
+        # Dynamic routing (opt-in): send the request to wherever the model is
+        # actually loaded right now. Falls back to the static routes for models
+        # not currently live on any upstream (cold-load via the catch-all, etc).
+        route = None
+        if discovery is not None:
+            up = await discovery.upstream_for(model)
+            if up is not None:
+                route = router.discovered_route(model, up)
+        if route is None:
+            route = router.resolve(model)
         if route is None:
             logger.warning("req.no_route", extra=event(model=model, routes=router.route_names()))
             return JSONResponse(

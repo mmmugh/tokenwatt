@@ -173,13 +173,22 @@ def serve(
             await asyncio.gather(task, return_exceptions=True)
             await client.aclose()
 
-    app_asgi = create_app(router=Router(cfg.routes), meter=meter, idle=idle, ledger=led,
+    router = Router(cfg.routes)
+    discovery = None
+    if cfg.discovery.enabled:
+        from tokenwatt.discovery import Discovery
+        discovery = Discovery(client=client, upstreams=router.discoverable_upstreams,
+                              ttl_s=cfg.discovery.ttl_s, timeout_s=cfg.discovery.timeout_s,
+                              min_refresh_s=cfg.discovery.min_refresh_s)
+    app_asgi = create_app(router=router, meter=meter, idle=idle, ledger=led,
                           rate=FlatRate(cfg.rate.flat_usd_per_kwh), client=client,
-                          detector=detector, serialize_lock=inference_lock, lifespan=lifespan)
+                          detector=detector, serialize_lock=inference_lock,
+                          discovery=discovery, lifespan=lifespan)
 
     routes_desc = ", ".join(f"{r.name}->{r.upstream}" for r in cfg.routes) or "(none)"
     mode = "serialized" if cfg.serialize_inference else "concurrent"
-    typer.echo(f"TokenWatt proxy on http://{eff_host}:{eff_port}  routes: {routes_desc}  ({mode}, no sudo)")
+    routing = "discover+static" if cfg.discovery.enabled else "static"
+    typer.echo(f"TokenWatt proxy on http://{eff_host}:{eff_port}  routes: {routes_desc}  ({mode}, {routing}, no sudo)")
     uvicorn.run(app_asgi, host=eff_host, port=eff_port, log_level="warning")
 
 

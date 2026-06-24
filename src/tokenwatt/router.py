@@ -21,6 +21,32 @@ class Router:
                 out.append(r.upstream)
         return out
 
+    def discoverable_upstreams(self) -> list[str]:
+        """Distinct upstreams of routes opted into discovery (discover=True),
+        in first-seen order. Excludes catalog-y backends (e.g. a vision server
+        whose /v1/models lists the whole cache)."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for r in self._routes:
+            if r.discover and r.upstream not in seen:
+                seen.add(r.upstream)
+                out.append(r.upstream)
+        return out
+
+    def upstream_type(self, upstream: str) -> str:
+        """Type ('text'/'vision'/'embeddings') of the static route owning this
+        upstream, so a dynamically-discovered route inherits the right modality.
+        Defaults to 'text' if no static route declares the upstream."""
+        for r in self._routes:
+            if r.upstream == upstream:
+                return r.type
+        return "text"
+
+    def discovered_route(self, model: str, upstream: str) -> RouteConfig:
+        """Synthesize a route sending `model` to a live-discovered `upstream`."""
+        return RouteConfig(name=f"discover:{model}", type=self.upstream_type(upstream),
+                           upstream=upstream, match=[model])
+
     def resolve(self, model: str) -> RouteConfig | None:
         best_route: RouteConfig | None = None
         best_key = None

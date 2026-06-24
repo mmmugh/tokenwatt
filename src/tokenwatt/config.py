@@ -12,6 +12,7 @@ class RouteConfig(BaseModel):
     dialect: Literal["openai", "anthropic"] = "openai"   # accepted now; dialect-specific token extraction deferred to a later milestone
     upstream: str
     match: list[str]
+    discover: bool = True   # include this upstream in dynamic discovery; set false for backends whose /v1/models is an on-disk catalog rather than what's loaded (e.g. an mlx_vlm vision server)
 
     @field_validator("upstream")
     @classmethod
@@ -40,6 +41,17 @@ class LoggingConfig(BaseModel):
     backup_count: int = 5
 
 
+class DiscoveryConfig(BaseModel):
+    """Dynamic model->upstream routing. When enabled, the proxy polls each
+    upstream's /v1/models and routes a request to wherever the model is actually
+    loaded (so a swapped mlx-tui slot or `lms load` needs no config edit). Static
+    `routes` remain the fallback + supply the upstream list / per-upstream type."""
+    enabled: bool = False
+    ttl_s: float = 15.0          # how long a discovered map stays fresh
+    timeout_s: float = 0.8       # per-upstream /v1/models probe timeout
+    min_refresh_s: float = 2.0   # floor between miss-triggered refreshes (keep < ttl_s)
+
+
 class Config(BaseModel):
     port: int = 7000
     host: str = "127.0.0.1"
@@ -47,6 +59,7 @@ class Config(BaseModel):
     rate: RateConfig = Field(default_factory=RateConfig)
     routes: list[RouteConfig] = Field(default_factory=list)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     serialize_inference: bool = False   # serialize requests so per-request energy windows can't overlap (accurate metering; lower throughput)
 
     @model_validator(mode="after")
