@@ -418,14 +418,17 @@ slice *usable*, not merely functional (see §17).
   *Adoption:* **YAML config + Pydantic fail-loud validation + `tokenwatt init`** scaffold +
   dual-match routing; `examples/m1-v1-embeddings.yaml`; the README **hero GIF**.
   *Verify:* ledger vs known token counts; a bad config halts with a pointable error.
-- **M2 — Calibration loop (#3 + #4) + machine-readable + releases.** Per-rail regression; profile
-  registry + confidence tiers; self-calibration wizard (manual + lab-meter modes); run the
-  lab-grade calibration campaign. *Adoption:* `--json` / `--once` output; tag-driven release pipeline (OIDC
-  trusted publishing). *Verify:* calibrated band vs lab ground truth; `--once` emits valid JSON.
-- **M3 — TOU rate model (#2) + the shareable card + menu-bar.** URDB cache + custom-TOU form +
-  flat; `ts→$/kWh`; `rate` CLI. *Adoption:* `tokenwatt wrap` **verdict card** (credible now that
+- **M2 — Calibration loop (#3 + #4) + TOU rate model (#2) + machine-readable + releases.** Per-rail
+  regression; profile registry + confidence tiers; self-calibration wizard (manual + lab-meter
+  modes); run the lab-grade calibration campaign. **TOU rate model (#2)** (moved up from M3 now that
+  the `wrap` card shipped in M1c-b): URDB cache + custom-TOU form, with flat `$/kWh` as the
+  degenerate case; `ts→$/kWh`; `rate` CLI. *Adoption:* `--json` / `--once` output; tag-driven release
+  pipeline (OIDC trusted publishing). *Verify:* calibrated band vs lab ground truth; a TOU request
+  prices at the correct period; `--once` emits valid JSON.
+- **M3 — Shareable card (PNG) + menu-bar.** *Adoption:* the `tokenwatt wrap` markdown/text **verdict
+  card** shipped early in M1c-b; the remaining piece is the rendered **PNG** (credible now that
   numbers are calibrated *and* rate-accurate); **SwiftBar** menu-bar plugin.
-  *Verify:* a TOU request prices at the correct period; `wrap` produces a shareable PNG + markdown.
+  *Verify:* `wrap` produces a shareable PNG + markdown.
 
 **Repo conventions:** `VERSION` starts `0.1.0`, auto-increments patch per commit via
 `.githooks/pre-commit`; feature work happens on branches, not `main`.
