@@ -207,6 +207,22 @@ def init(
     typer.echo(f"wrote {config}")
 
 
+@app.command()
+def doctor(
+    config: str = typer.Option("~/.tokenwatt/tokenwatt.yaml", "--config", "-c"),
+    json_out: bool = typer.Option(False, "--json", help="machine-readable output (for bug reports)"),
+    fix: bool = typer.Option(False, "--fix", help="apply safe fixes (create ledger dir, scaffold a missing config)"),
+):
+    """Diagnose the setup: config, proxy, upstreams, routing, ledger, energy meter."""
+    import asyncio
+    import os
+    from tokenwatt import doctor as _doc
+
+    checks = asyncio.run(_doc.run(os.path.expanduser(config), fix=fix))
+    typer.echo(_doc.to_json(checks) if json_out else _doc.format_text(checks))
+    raise typer.Exit(_doc.exit_code(checks))
+
+
 _GATE = 1.5   # outside the ±~30% measurement band before claiming a winner (cheaper/pricier vs comparable)
 
 
