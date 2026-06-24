@@ -11,6 +11,16 @@ class Router:
     def route_names(self) -> list[str]:
         return [r.name for r in self._routes]
 
+    def upstreams(self) -> list[str]:
+        """Distinct upstream base URLs, in first-seen (config) order."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for r in self._routes:
+            if r.upstream not in seen:
+                seen.add(r.upstream)
+                out.append(r.upstream)
+        return out
+
     def resolve(self, model: str) -> RouteConfig | None:
         best_route: RouteConfig | None = None
         best_key = None

@@ -24,6 +24,66 @@ def _client_for(app):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://up")
 
 
+def _mock_client(handler):
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def test_get_v1_models_aggregates_reachable_upstreams(tmp_path):
+    # Discovery clients (e.g. an embedding provider's health probe) GET /v1/models,
+    # which has no body to route on. tokenwatt answers with the deduped union of
+    # every distinct upstream's model list, skipping any upstream that's down.
+    def handler(request):
+        host = request.url.host
+        if host == "up-a":
+            return httpx.Response(200, json={"object": "list",
+                                             "data": [{"id": "model-a", "object": "model"}]})
+        if host == "up-b":
+            return httpx.Response(200, json={"object": "list",
+                                             "data": [{"id": "model-b", "object": "model"}]})
+        raise httpx.ConnectError("down")
+
+    router = Router([
+        RouteConfig(name="a", upstream="http://up-a:1", match=["model-a"]),
+        RouteConfig(name="b", upstream="http://up-b:2", match=["model-b"]),
+        RouteConfig(name="dead", upstream="http://up-down:3", match=["*"]),
+    ])
+    app = create_app(
+        router=router, meter=FakeMeter(), idle=IdleBaseline(FakeMeter()),
+        ledger=Ledger(str(tmp_path / "l.sqlite")), rate=FlatRate(0.31),
+        client=_mock_client(handler), detector=ColdStartDetector(),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://tw") as c:
+        r = await c.get("/v1/models")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["object"] == "list"
+    assert sorted(m["id"] for m in body["data"]) == ["model-a", "model-b"]
+
+
+async def test_get_v1_models_is_not_metered(tmp_path):
+    # A model-list query is discovery, not inference: it must never write a ledger
+    # row (honesty contract — no fabricated energy/cost for a free GET).
+    def handler(request):
+        return httpx.Response(200, json={"object": "list",
+                                         "data": [{"id": "m", "object": "model"}]})
+
+    router = Router([RouteConfig(name="m1", upstream="http://up", match=["*"])])
+    ledger = Ledger(str(tmp_path / "l.sqlite"))
+    app = create_app(
+        router=router, meter=FakeMeter(), idle=IdleBaseline(FakeMeter()),
+        ledger=ledger, rate=FlatRate(0.31),
+        client=_mock_client(handler), detector=ColdStartDetector(),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://tw") as c:
+        r = await c.get("/v1/models")
+    assert r.status_code == 200
+    with ledger._conn() as conn:
+        n = conn.execute("SELECT COUNT(*) AS n FROM requests").fetchone()["n"]
+    assert n == 0
+
+
 async def test_streaming_passthrough_is_byte_exact_and_records(tmp_path, fake_upstream_streaming):
     ledger = Ledger(str(tmp_path / "l.sqlite"))
     meter = FakeMeter(windows={"x": EnergyByRail({"gpu": 3_600_000.0})})  # 1 kWh window

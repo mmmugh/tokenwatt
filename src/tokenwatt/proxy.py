@@ -188,4 +188,38 @@ def create_app(*, router: Router, meter: EnergyMeter, idle: IdleBaseline,
             return Response(content=body, status_code=up_resp.status_code,
                             headers=dict(resp_headers))
 
-    return Starlette(routes=[Route("/v1/{path:path}", forward, methods=["POST"])], lifespan=lifespan)
+    async def list_models(request: Request) -> Response:
+        """Aggregate /v1/models across all distinct upstreams so a client pointed
+        at tokenwatt can discover everything it can route to. Discovery, not
+        inference: unmetered, never written to the ledger. Fans out concurrently
+        with a short timeout (discovery probes are latency-sensitive — e.g. an
+        embedding provider's health check) and skips upstreams that error/timeout."""
+
+        async def _fetch(upstream: str) -> list:
+            try:
+                r = await client.get(f"{upstream}/v1/models", timeout=0.8)
+                if r.status_code != 200:
+                    return []
+                body = r.json()
+            except Exception:
+                return []
+            data = body.get("data") if isinstance(body, dict) else None
+            return data if isinstance(data, list) else []
+
+        seen: set[str] = set()
+        merged: list = []
+        for models in await asyncio.gather(*(_fetch(u) for u in router.upstreams())):
+            for m in models:
+                mid = m.get("id") if isinstance(m, dict) else None
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    merged.append(m)
+        return JSONResponse({"object": "list", "data": merged})
+
+    return Starlette(
+        routes=[
+            Route("/v1/models", list_models, methods=["GET"]),
+            Route("/v1/{path:path}", forward, methods=["POST"]),
+        ],
+        lifespan=lifespan,
+    )
