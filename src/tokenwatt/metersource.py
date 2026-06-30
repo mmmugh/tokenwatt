@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+
+import httpx
 
 
 @runtime_checkable
@@ -32,3 +35,55 @@ class FakeMeterSource:
         v = self._readings[min(self._i, len(self._readings) - 1)]
         self._i += 1
         return v
+
+
+@dataclass(frozen=True)
+class ShellyStatus:
+    total_wh: float       # aenergy.total — the monotonic accumulator we integrate from
+    apower_w: float       # instantaneous active power (sanity / live display only)
+    voltage_v: float
+
+
+class ShellyMeterSource:
+    """Shelly Plus Plug US (Gen2) wall-energy meter over local RPC. Reads the
+    plug's own accumulated-energy counter; no cloud, no sudo."""
+    name = "shelly-plus-plug-us"
+    accuracy_pct = 1.0                       # datasheet ~±1%; band floor in C2
+    tier = "smart_plug"
+
+    def __init__(self, host: str, switch_id: int = 0, password: str | None = None,
+                 client: httpx.Client | None = None, timeout: float = 2.0) -> None:
+        self._host = host.rstrip("/")
+        self._id = switch_id
+        self._timeout = timeout
+        self._own = client is None
+        auth = httpx.DigestAuth("admin", password) if password else None
+        self._client = client if client is not None else httpx.Client(auth=auth, timeout=timeout)
+
+    def _url(self) -> str:
+        base = self._host if "://" in self._host else f"http://{self._host}"
+        return f"{base}/rpc/Switch.GetStatus?id={self._id}"
+
+    def read_status(self) -> ShellyStatus:
+        r = self._client.get(self._url(), timeout=self._timeout)
+        r.raise_for_status()
+        body = r.json()
+        return ShellyStatus(
+            total_wh=float(body["aenergy"]["total"]),
+            apower_w=float(body.get("apower", 0.0)),
+            voltage_v=float(body.get("voltage", 0.0)),
+        )
+
+    def read_accumulated_wh(self) -> float:
+        return self.read_status().total_wh
+
+    def reachable(self) -> tuple[bool, str]:
+        try:
+            s = self.read_status()
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
+        return True, f"{self.name} @ {self._host}: {s.total_wh:.3f} Wh total, {s.apower_w:.1f} W now"
+
+    def close(self) -> None:
+        if self._own:
+            self._client.close()
