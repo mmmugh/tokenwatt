@@ -93,6 +93,46 @@ def render_report(ledger: Ledger, now: float) -> str:
     return "\n".join(lines)
 
 
+calibrate_app = typer.Typer(no_args_is_help=True,
+                            help="Wall-meter calibration: connect a smart plug and relate zeus↔wall.")
+app.add_typer(calibrate_app, name="calibrate")
+
+
+@calibrate_app.command("probe")
+def calibrate_probe(
+    meter_host: Optional[str] = typer.Option(None, "--meter-host", help="Shelly smart plug host/IP"),
+    meter_id: int = typer.Option(0, "--meter-id", help="RPC Switch component id"),
+    seconds: float = typer.Option(30.0, "--seconds", help="window length; generate load during it"),
+    poll: float = typer.Option(0.5, "--poll", help="accumulator poll interval (s)"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="read meter host from this config"),
+):
+    """RAW diagnostic: read synchronized rail-Δ (zeus) and wall-Δ (plug) over a
+    window. Proves the plug data is trustworthy before any fitting. Not a calibration."""
+    from tokenwatt import campaign
+    from tokenwatt.config import load_config, ConfigError
+
+    host, switch_id, password = meter_host, meter_id, None
+    if host is None and config is not None:
+        try:
+            cfg = load_config(config)
+        except ConfigError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+        host = cfg.calibration.meter_host
+        switch_id = cfg.calibration.meter_id
+        password = cfg.calibration.meter_password
+    if not host:
+        typer.echo("no meter host — pass --meter-host or set calibration.meter_host in your config", err=True)
+        raise typer.Exit(1)
+
+    result, msg = campaign.run_probe(host=host, switch_id=switch_id, password=password,
+                                     seconds=seconds, poll_s=poll)
+    typer.echo(msg)
+    if result is None:
+        raise typer.Exit(1)
+    typer.echo(campaign.format_probe(result))
+
+
 @app.command()
 def report(ledger: str = typer.Option("~/.tokenwatt/ledger.sqlite", "--ledger")):
     """Show today/month electricity cost and a per-model breakdown."""

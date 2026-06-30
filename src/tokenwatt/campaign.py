@@ -63,6 +63,35 @@ def probe(meter: EnergyMeter, source: MeterSource, *, seconds: float = 30.0,
     )
 
 
+def _default_meter():
+    from tokenwatt.meter import ZeusMeter
+    return ZeusMeter()
+
+
+def _default_shelly(host: str, switch_id: int, password: str | None):
+    from tokenwatt.metersource import ShellyMeterSource
+    return ShellyMeterSource(host, switch_id=switch_id, password=password)
+
+
+def run_probe(*, host: str, switch_id: int = 0, password: str | None = None,
+              seconds: float = 30.0, poll_s: float = 0.5,
+              make_meter=_default_meter, make_source=_default_shelly,
+              sleep=time.sleep, monotonic=time.monotonic) -> tuple[ProbeResult | None, str]:
+    """Construct the meters, preflight, and run `probe`. Returns (result, message);
+    (None, reason) when the plug is unreachable or the rail meter is unavailable."""
+    source = make_source(host, switch_id, password)
+    ok, detail = source.reachable() if hasattr(source, "reachable") else (True, "")
+    if not ok:
+        return None, f"meter unreachable: {detail}"
+    try:
+        meter = make_meter()
+    except Exception as e:
+        return None, (f"energy meter unavailable ({type(e).__name__}: {e}); "
+                      f"run this on the Apple-Silicon Mac being calibrated")
+    result = probe(meter, source, seconds=seconds, poll_s=poll_s, sleep=sleep, monotonic=monotonic)
+    return result, detail
+
+
 def format_probe(r: ProbeResult) -> str:
     rails = "  ".join(f"{k}={v:.1f}J" for k, v in sorted(r.rail_by_rail_j.items()))
     ratio = f"{r.ratio_wall_over_rail:.3f}" if r.ratio_wall_over_rail is not None else "—"

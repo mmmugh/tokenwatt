@@ -61,3 +61,44 @@ def test_format_probe_is_plain_and_marks_uncalibrated():
     assert "cpu_total" in out
     # must not masquerade as a calibration
     assert "calibrated" not in out.lower()
+
+
+from tokenwatt.meter import FakeMeter
+
+
+def _ok_source(*_a, **_k):
+    s = FakeMeterSource([1.0, 1.0, 1.001])
+    s.reachable = lambda: (True, "fake ok")   # type: ignore[attr-defined]
+    return s
+
+
+def _dead_source(*_a, **_k):
+    s = FakeMeterSource([1.0])
+    s.reachable = lambda: (False, "ConnectError: no route")  # type: ignore[attr-defined]
+    return s
+
+
+def test_run_probe_returns_result_with_injected_fakes():
+    clk = _Clock()
+    result, msg = campaign.run_probe(
+        host="h", seconds=1.0, poll_s=0.5,
+        make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
+        make_source=_ok_source, sleep=clk.sleep, monotonic=clk.monotonic)
+    assert result is not None
+    assert result.rail_total_j > 0
+    assert "fake ok" in msg
+
+
+def test_run_probe_aborts_loud_when_meter_unreachable():
+    result, msg = campaign.run_probe(host="h", make_source=_dead_source,
+                                     make_meter=lambda: FakeMeter())
+    assert result is None                      # fail loud, no probe attempted
+    assert "unreachable" in msg.lower()
+
+
+def test_run_probe_degrades_when_rail_meter_unavailable():
+    def _boom():
+        raise RuntimeError("not Apple Silicon")
+    result, msg = campaign.run_probe(host="h", make_source=_ok_source, make_meter=_boom)
+    assert result is None
+    assert "meter" in msg.lower()
