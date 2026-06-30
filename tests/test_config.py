@@ -1,6 +1,6 @@
 import pytest
 from pydantic import ValidationError
-from tokenwatt.config import Config, RouteConfig
+from tokenwatt.config import Config, RouteConfig, CalibrationConfig
 
 
 def test_valid_config_parses_with_defaults():
@@ -34,3 +34,18 @@ def test_duplicate_route_names_rejected():
             {"name": "m1", "upstream": "http://b", "match": ["b"]},
         ])
     assert "duplicate" in str(e.value).lower()
+
+
+def test_calibration_defaults_are_empty():
+    # zero-config must still construct; an absent plug is not an error
+    cfg = Config()
+    assert isinstance(cfg.calibration, CalibrationConfig)
+    assert cfg.calibration.meter_host is None
+    assert cfg.calibration.meter_id == 0
+    assert cfg.calibration.meter_password is None
+
+
+def test_calibration_loads_from_mapping():
+    cfg = Config(calibration={"meter_host": "shelly.local", "meter_id": 1})
+    assert cfg.calibration.meter_host == "shelly.local"
+    assert cfg.calibration.meter_id == 1

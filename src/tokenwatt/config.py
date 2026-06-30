@@ -52,6 +52,14 @@ class DiscoveryConfig(BaseModel):
     min_refresh_s: float = 2.0   # floor between miss-triggered refreshes (keep < ttl_s)
 
 
+class CalibrationConfig(BaseModel):
+    """Wall-meter connection for `tokenwatt calibrate`. Optional — absent means
+    'no plug configured', not an error. (C3 will add profile-loading fields.)"""
+    meter_host: str | None = None        # Shelly Plus Plug US host/IP
+    meter_id: int = 0                    # Gen2 Switch component id
+    meter_password: str | None = None    # set only if the plug has auth enabled
+
+
 class Config(BaseModel):
     port: int = 7000
     host: str = "127.0.0.1"
@@ -60,6 +68,7 @@ class Config(BaseModel):
     routes: list[RouteConfig] = Field(default_factory=list)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
+    calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
     serialize_inference: bool = False   # serialize requests so per-request energy windows can't overlap (accurate metering; lower throughput)
 
     @model_validator(mode="after")
