@@ -10,7 +10,7 @@
   sub-projects** and out of scope here.
 
 An interactive tool, `tokenwatt calibrate`, that guides a user to connect a metering smart plug
-(Shelly Plus Plug US), runs a standardized inference workload battery across their configured
+(Shelly smart plug), runs a standardized inference workload battery across their configured
 models under sustained load, and fits a **repeatable correlation** between TokenWatt's zeus
 per-rail energy and the plug's measured AC wall energy. The output is a per-machine calibration
 profile that turns the proxy's `estimated (±15–30%)` numbers into honestly-banded
@@ -24,7 +24,7 @@ drop-in upgrades, not rewrites.
 | Decision | Default | Change to… |
 |---|---|---|
 | Fit ambition | **staged** — scalar floor now, per-rail gated on the data (C5) | commit to per-rail, or stay scalar |
-| Wall meter | **Shelly Plus Plug US** (Gen2 RPC, `aenergy.total`) | add WT310E lab adapter (deferred) |
+| Wall meter | **Shelly smart plug** (Gen2+ RPC, `aenergy.total`; verified vs Plug US Gen4 `S4PL-00116US`) | add WT310E lab adapter (deferred) |
 | Calibration driver | **self-contained harness** (owns its own meter, hits upstream directly) | drive load through the running proxy |
 | Profile store | **one human-readable JSON per machine** under `~/.tokenwatt/profiles/` | a sqlite table |
 | Profile key | **machine** (SoC + model id + RAM + macOS major) | per-model, or per-(machine×model) |
@@ -127,7 +127,7 @@ We integrate by **reading the accumulator at window boundaries** (`Δwh = read(t
 never by integrating instantaneous power ourselves — the plug's own counter is more accurate and
 avoids sampling error.
 
-- **`ShellyMeterSource`** (the only built implementation): Gen2 RPC over HTTP,
+- **`ShellyMeterSource`** (the only built implementation): Gen2+ RPC over HTTP,
   `GET http://<host>/rpc/Switch.GetStatus?id=<id>` → `result.aenergy.total` (Wh, milli-Wh
   resolution). Configured by host/IP + switch id; optional digest auth if the plug has a password.
   `accuracy_pct ≈ 1`, `tier="smart_plug"`. Reachability + identity surfaced via a `doctor`-style
@@ -224,7 +224,9 @@ transparent, inspectable, shareable (same ethos as the dated, editable `cloud.py
   slugged to a stable key. No sudo (consistent with the project's no-sudo ethos). PSU class falls
   out of `hw.model` (Mac Studio vs MacBook Air).
 - **Stored fields:** `machine_id`, human label, `fit_type` (`scalar`|`per_rail`), coefficients,
-  held-out residual, condition number, meter `{name, tier, accuracy_pct}`, sample/run counts,
+  held-out residual, condition number, meter `{name, tier, accuracy_pct, model, gen, mac}`
+  (exact device identity read from `Shelly.GetDeviceInfo` at calibration time — the class stays
+  generic `shelly-plug`, the record is precise), sample/run counts,
   battery version, macOS version, created-at timestamp, `confidence_band`, `tier`.
 - **Registry API:** `save(profile)`, `load(machine_id)`, `active_for_current_machine()`, `list()`.
   Graceful miss → `None` (caller falls back to `estimated`).

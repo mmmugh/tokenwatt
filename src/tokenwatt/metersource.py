@@ -45,9 +45,11 @@ class ShellyStatus:
 
 
 class ShellyMeterSource:
-    """Shelly Plus Plug US (Gen2) wall-energy meter over local RPC. Reads the
-    plug's own accumulated-energy counter; no cloud, no sudo."""
-    name = "shelly-plus-plug-us"
+    """Shelly smart-plug wall-energy meter over the Gen2+ RPC API (one API across
+    Gen2/Gen3/Gen4; verified against the Plug US Gen4, model S4PL-00116US). Reads
+    the plug's own accumulated-energy counter; no cloud, no sudo. The exact device
+    model/gen is recorded into the calibration profile in C2."""
+    name = "shelly-plug"
     accuracy_pct = 1.0                       # datasheet ~±1%; band floor in C2
     tier = "smart_plug"
 

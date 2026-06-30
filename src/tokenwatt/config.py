@@ -55,8 +55,8 @@ class DiscoveryConfig(BaseModel):
 class CalibrationConfig(BaseModel):
     """Wall-meter connection for `tokenwatt calibrate`. Optional — absent means
     'no plug configured', not an error. (C3 will add profile-loading fields.)"""
-    meter_host: str | None = None        # Shelly Plus Plug US host/IP
-    meter_id: int = 0                    # Gen2 Switch component id
+    meter_host: str | None = None        # Shelly smart-plug host/IP (Gen2+ RPC)
+    meter_id: int = 0                    # RPC Switch component id
     meter_password: str | None = None    # set only if the plug has auth enabled
 
 

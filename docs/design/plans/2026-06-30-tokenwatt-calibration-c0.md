@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stand up the wall-energy `MeterSource` abstraction and a `ShellyMeterSource` over Gen2 RPC, then ship `tokenwatt calibrate probe` — a diagnostic that reads synchronized rail-Δ (zeus) and wall-Δ (plug) over a window and reports whether they move together, plus the plug's measured resolution/cadence.
+**Goal:** Stand up the wall-energy `MeterSource` abstraction and a `ShellyMeterSource` over Gen2+ RPC, then ship `tokenwatt calibrate probe` — a diagnostic that reads synchronized rail-Δ (zeus) and wall-Δ (plug) over a window and reports whether they move together, plus the plug's measured resolution/cadence.
 
 **Architecture:** A new `metersource.py` holds the `MeterSource` protocol + `ShellyMeterSource` + a deterministic `FakeMeterSource` (mirroring how `FakeMeter` lives beside `ZeusMeter` in `meter.py`). A new `campaign.py` holds the harness orchestration — a pure, dependency-injected `probe()` that polls both meters on one clock — and grows into the C1 battery later. The CLI gets a `calibrate` typer sub-app whose first command is `probe`. Nothing touches the proxy hot path; this is offline tooling.
 
-**Tech Stack:** Python ≥3.10, `httpx` (sync `Client`, already a dependency), `typer`, `pydantic`, `pytest` + `pytest-asyncio`. Shelly Plus Plug US Gen2 RPC (`GET /rpc/Switch.GetStatus?id=<n>` → unwrapped status object with `aenergy.total` in Wh and `apower` in W).
+**Tech Stack:** Python ≥3.10, `httpx` (sync `Client`, already a dependency), `typer`, `pydantic`, `pytest` + `pytest-asyncio`. Shelly smart plug Gen2+ RPC (`GET /rpc/Switch.GetStatus?id=<n>` → unwrapped status object with `aenergy.total` in Wh and `apower` in W).
 
 ## Global Constraints
 
@@ -23,7 +23,7 @@
 
 ## File Structure
 
-- **Create `src/tokenwatt/metersource.py`** — `MeterSource` protocol; `ShellyStatus`; `ShellyMeterSource` (Gen2 RPC client + `reachable()`); `FakeMeterSource`. Single responsibility: *the wall-energy reference*.
+- **Create `src/tokenwatt/metersource.py`** — `MeterSource` protocol; `ShellyStatus`; `ShellyMeterSource` (Gen2+ RPC client + `reachable()`); `FakeMeterSource`. Single responsibility: *the wall-energy reference*.
 - **Create `src/tokenwatt/campaign.py`** — `ProbeResult`; pure `probe()`; `run_probe()` construction seam; `format_probe()`. Single responsibility: *harness orchestration* (probe now; battery in C1).
 - **Modify `src/tokenwatt/config.py`** — add `CalibrationConfig` + `Config.calibration` (just the meter connection for now).
 - **Modify `src/tokenwatt/cli.py`** — add the `calibrate` typer sub-app + `probe` command.
@@ -136,7 +136,7 @@ git commit -m "feat(calib): MeterSource protocol + FakeMeterSource"
 
 ---
 
-### Task 2: `ShellyMeterSource` (Gen2 RPC client)
+### Task 2: `ShellyMeterSource` (Gen2+ RPC client)
 
 **Files:**
 - Modify: `src/tokenwatt/metersource.py`
@@ -146,7 +146,7 @@ git commit -m "feat(calib): MeterSource protocol + FakeMeterSource"
 - Consumes: `MeterSource` (Task 1).
 - Produces:
   - `ShellyStatus(total_wh: float, apower_w: float, voltage_v: float)` — frozen dataclass.
-  - `ShellyMeterSource(host: str, switch_id: int = 0, password: str | None = None, client: httpx.Client | None = None, timeout: float = 2.0)` with `read_status() -> ShellyStatus`, `read_accumulated_wh() -> float`, `reachable() -> tuple[bool, str]`, `close() -> None`. Class attrs `name="shelly-plus-plug-us"`, `accuracy_pct=1.0`, `tier="smart_plug"`.
+  - `ShellyMeterSource(host: str, switch_id: int = 0, password: str | None = None, client: httpx.Client | None = None, timeout: float = 2.0)` with `read_status() -> ShellyStatus`, `read_accumulated_wh() -> float`, `reachable() -> tuple[bool, str]`, `close() -> None`. Class attrs `name="shelly-plug"`, `accuracy_pct=1.0`, `tier="smart_plug"`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -157,7 +157,7 @@ import httpx
 from tokenwatt.metersource import ShellyMeterSource, ShellyStatus, MeterSource
 
 
-_SHELLY_BODY = {       # shape of GET /rpc/Switch.GetStatus?id=0 (Gen2, unwrapped)
+_SHELLY_BODY = {       # shape of GET /rpc/Switch.GetStatus?id=0 (Gen2+ RPC, unwrapped)
     "id": 0, "output": True, "apower": 12.4, "voltage": 121.7, "current": 0.10,
     "aenergy": {"total": 1234.567, "by_minute": [0, 0, 0], "minute_ts": 1700000000},
 }
@@ -178,7 +178,7 @@ def test_shelly_reads_accumulated_wh_from_aenergy_total():
     client, seen = _mock_shelly()
     src = ShellyMeterSource("shelly.local", switch_id=0, client=client)
     assert src.read_accumulated_wh() == pytest.approx(1234.567)
-    # hits the Gen2 RPC GET endpoint with the right component id
+    # hits the Gen2+ RPC GET endpoint with the right component id
     assert seen["url"] == "http://shelly.local/rpc/Switch.GetStatus?id=0"
 
 
@@ -231,9 +231,9 @@ class ShellyStatus:
 
 
 class ShellyMeterSource:
-    """Shelly Plus Plug US (Gen2) wall-energy meter over local RPC. Reads the
+    """Shelly smart plug (Gen2+ RPC) wall-energy meter over local RPC. Reads the
     plug's own accumulated-energy counter; no cloud, no sudo."""
-    name = "shelly-plus-plug-us"
+    name = "shelly-plug"
     accuracy_pct = 1.0                       # datasheet ~±1%; band floor in C2
     tier = "smart_plug"
 
@@ -284,7 +284,7 @@ Expected: PASS (9 passed total in the file).
 
 ```bash
 git add src/tokenwatt/metersource.py tests/test_metersource.py
-git commit -m "feat(calib): ShellyMeterSource over Gen2 RPC (aenergy.total)"
+git commit -m "feat(calib): ShellyMeterSource over Gen2+ RPC (aenergy.total)"
 ```
 
 ---
@@ -332,8 +332,8 @@ Expected: FAIL — `ImportError: cannot import name 'CalibrationConfig'`.
 class CalibrationConfig(BaseModel):
     """Wall-meter connection for `tokenwatt calibrate`. Optional — absent means
     'no plug configured', not an error. (C3 will add profile-loading fields.)"""
-    meter_host: str | None = None        # Shelly Plus Plug US host/IP
-    meter_id: int = 0                    # Gen2 Switch component id
+    meter_host: str | None = None        # Shelly smart plug host/IP
+    meter_id: int = 0                    # RPC Switch component id
     meter_password: str | None = None    # set only if the plug has auth enabled
 ```
 
@@ -680,8 +680,8 @@ app.add_typer(calibrate_app, name="calibrate")
 
 @calibrate_app.command("probe")
 def calibrate_probe(
-    meter_host: Optional[str] = typer.Option(None, "--meter-host", help="Shelly Plus Plug US host/IP"),
-    meter_id: int = typer.Option(0, "--meter-id", help="Gen2 Switch component id"),
+    meter_host: Optional[str] = typer.Option(None, "--meter-host", help="Shelly smart plug host/IP"),
+    meter_id: int = typer.Option(0, "--meter-id", help="RPC Switch component id"),
     seconds: float = typer.Option(30.0, "--seconds", help="window length; generate load during it"),
     poll: float = typer.Option(0.5, "--poll", help="accumulator poll interval (s)"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="read meter host from this config"),
@@ -747,7 +747,7 @@ Not a CI step — the human/operator validation that closes C0 and feeds C1.
 ## Self-Review
 
 **Spec coverage (C0 slice of `2026-06-30-tokenwatt-calibration-loop-design.md`):**
-- §5 `MeterSource` protocol → Task 1; `ShellyMeterSource` (Gen2 RPC, `aenergy.total`, digest auth, `reachable()`) → Task 2; resolution/cadence caveat ("C0 measures it empirically") → Task 4 characterization + on-device step 5. `ManualMeterSource`/`LabMeterSource` explicitly deferred (documented).
+- §5 `MeterSource` protocol → Task 1; `ShellyMeterSource` (Gen2+ RPC, `aenergy.total`, digest auth, `reachable()`) → Task 2; resolution/cadence caveat ("C0 measures it empirically") → Task 4 characterization + on-device step 5. `ManualMeterSource`/`LabMeterSource` explicitly deferred (documented).
 - §14 C0 deliverables — protocol, Shelly source, plug host in config (Task 3), doctor-style reachability (`reachable()` in Task 2, surfaced by `run_probe` preflight in Task 5), `calibrate --probe` (Task 5, as the `calibrate probe` subcommand). *Naming note:* the spec wrote `calibrate --probe`; this plan ships it as the `calibrate probe` subcommand so `run`/`show` (C4) slot into the same typer group — a deliberate, documented deviation.
 - §11 failure modes touched in C0 — Shelly unreachable (`reachable()` → fail loud), rail meter unavailable off-platform (`run_probe` degrades, doesn't crash).
 - Honesty constraint — probe emits raw numbers + a labeled-uncalibrated ratio only; a test asserts the formatted output never contains `calibrated`.
