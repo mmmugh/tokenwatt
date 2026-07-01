@@ -43,3 +43,19 @@ def test_two_variable_with_one_coefficient_clamped():
     assert x[1] == pytest.approx(0.0, abs=1e-6)      # second coefficient clamped
     assert x[0] == pytest.approx(1.0, abs=1e-6)
     assert res == pytest.approx(0.0, abs=1e-6)
+
+
+def test_backoff_branch_recovers_when_a_passive_coefficient_goes_negative():
+    # unconstrained best fit is [4, -1] (b = 4 - 1*col1); NNLS must back col1 out
+    # to 0 and refit col0, exercising the alpha step + passive->active demotion.
+    A = [[1.0, 1.0], [1.0, 2.0], [1.0, 3.0]]
+    b = [3.0, 2.0, 1.0]
+    x, res = nnls(A, b)
+    assert x[1] == pytest.approx(0.0, abs=1e-6)     # col1 backed out to 0
+    assert x[0] == pytest.approx(2.0, abs=1e-6)     # col0 refit to mean(b)
+    assert res == pytest.approx(2.0 ** 0.5, abs=1e-6)   # ‖[2,2,2]-[3,2,1]‖ = √2
+
+
+def test_raises_when_iteration_budget_exhausted():
+    with pytest.raises(RuntimeError):
+        nnls([[1.0, 0.0], [0.0, 1.0]], [3.0, 4.0], max_iter=0)   # zero budget -> can't converge

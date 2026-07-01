@@ -60,7 +60,8 @@ def nnls(A: list[list[float]], b: list[float], *, tol: float = 1e-10,
     passive: list[int] = []
     active = list(range(n))
     for _ in range(max_iter):
-        w = _matTvec(A, [b[i] - _matvec(A, x)[i] for i in range(len(b))])
+        ax = _matvec(A, x)
+        w = _matTvec(A, [b[i] - ax[i] for i in range(len(b))])
         if not active or max(w[j] for j in active) <= tol:
             break
         j = max(active, key=lambda j: w[j])
@@ -72,7 +73,12 @@ def nnls(A: list[list[float]], b: list[float], *, tol: float = 1e-10,
                 x = s
                 break
             # some passive coefficient went non-positive: back off along x -> s
-            alpha = min(x[j] / (x[j] - s[j]) for j in passive if s[j] <= tol and x[j] != s[j])
+            ratios = [x[j] / (x[j] - s[j]) for j in passive
+                      if s[j] <= tol and abs(x[j] - s[j]) > tol]
+            if not ratios:                      # no feasible back-off direction (degenerate)
+                x = [max(v, 0.0) for v in s]
+                break
+            alpha = min(ratios)
             x = [x[j] + alpha * (s[j] - x[j]) for j in range(n)]
             for j in list(passive):
                 if x[j] <= tol:
@@ -80,5 +86,7 @@ def nnls(A: list[list[float]], b: list[float], *, tol: float = 1e-10,
                     active.append(j)
             if not passive:
                 break
+    else:
+        raise RuntimeError(f"NNLS did not converge in {max_iter} iterations")
     x = [max(v, 0.0) for v in x]
     return x, _residual_norm(A, x, b)
