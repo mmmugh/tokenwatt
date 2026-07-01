@@ -1,12 +1,14 @@
 # src/tokenwatt/campaign.py
 from __future__ import annotations
 
+import json
+import os
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from statistics import median
 from typing import Callable
 
-from tokenwatt.battery import ChatResult
+from tokenwatt.battery import ChatResult, LoadCell, LoadClient
 from tokenwatt.meter import EnergyByRail, EnergyMeter
 from tokenwatt.metersource import MeterSource
 
@@ -181,3 +183,75 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
                       e_wall_marginal_j=marg_wall,
                       tok_in=None if any_unknown else tok_in,
                       tok_out=None if any_unknown else tok_out, requests=requests)
+
+
+_CAMPAIGN_SCHEMA = 1
+
+
+@dataclass
+class CampaignResult:
+    model: str
+    meter_name: str
+    meter_tier: str
+    meter_accuracy_pct: float
+    cell_seconds: float
+    passes: int
+    idle: IdleRates
+    samples: list[CellSample]
+    schema_version: int
+    timestamp: float
+
+
+def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
+                 make_meter, make_source, host: str, switch_id: int = 0,
+                 password: str | None = None, cell_seconds: float = 300.0, passes: int = 2,
+                 timestamp: float, idle_seconds: float | None = None,
+                 sleep=time.sleep, monotonic=time.monotonic) -> tuple["CampaignResult | None", str]:
+    """Preflight, measure idle, then run each (cell × pass) as a sustained-load
+    bracket. Returns (result, message); (None, reason) on preflight or read failure."""
+    source = make_source(host, switch_id, password)
+    ok, detail = source.reachable() if hasattr(source, "reachable") else (True, "")
+    if not ok:
+        return None, f"meter unreachable: {detail}"
+    try:
+        meter = make_meter()
+    except Exception as e:
+        return None, (f"energy meter unavailable ({type(e).__name__}: {e}); "
+                      f"run this on the Apple-Silicon Mac being calibrated")
+    try:
+        idle = measure_idle(meter, source, seconds=idle_seconds or cell_seconds,
+                            sleep=sleep, monotonic=monotonic)
+        samples: list[CellSample] = []
+        for _ in range(passes):
+            for cell in cells:
+                samples.append(run_cell(
+                    meter, source, lambda c=cell: load.chat(model, c.prompt, c.max_tokens),
+                    idle, cell=cell.name, model=model, seconds=cell_seconds,
+                    sleep=sleep, monotonic=monotonic))
+    except Exception as e:
+        return None, f"campaign read failed ({type(e).__name__}: {e})"
+    result = CampaignResult(
+        model=model, meter_name=source.name, meter_tier=source.tier,
+        meter_accuracy_pct=source.accuracy_pct, cell_seconds=cell_seconds, passes=passes,
+        idle=idle, samples=samples, schema_version=_CAMPAIGN_SCHEMA, timestamp=timestamp)
+    return result, f"{len(samples)} samples over {passes} pass(es)"
+
+
+def campaign_to_dict(result: CampaignResult) -> dict:
+    return {
+        "schema_version": result.schema_version,
+        "timestamp": result.timestamp,
+        "model": result.model,
+        "meter": {"name": result.meter_name, "tier": result.meter_tier,
+                  "accuracy_pct": result.meter_accuracy_pct},
+        "cell_seconds": result.cell_seconds,
+        "passes": result.passes,
+        "idle": asdict(result.idle),
+        "samples": [asdict(s) for s in result.samples],
+    }
+
+
+def write_campaign(result: CampaignResult, path: str) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(campaign_to_dict(result), f, indent=2)

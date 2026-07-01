@@ -1,8 +1,11 @@
+import json
+import os
+
 import pytest
 
 from tokenwatt.meter import FakeMeter, EnergyByRail
 from tokenwatt.metersource import FakeMeterSource
-from tokenwatt.battery import ChatResult
+from tokenwatt.battery import ChatResult, FakeLoadClient, LoadCell
 from tokenwatt import campaign
 
 
@@ -81,3 +84,57 @@ def test_run_cell_clamps_negative_marginals_to_zero():
                           seconds=1.0, sleep=clk.sleep, monotonic=clk.monotonic)
     assert s.e_rail_marginal_j["cpu_total"] == 0.0     # never a negative energy
     assert s.e_wall_marginal_j == 0.0
+
+
+def _cells():
+    return [LoadCell("prefill", "p", 8), LoadCell("decode", "d", 1024)]
+
+
+def test_run_campaign_collects_one_sample_per_cell_per_pass():
+    clk = _Clock()
+    result, msg = campaign.run_campaign(
+        cells=_cells(), model="m1",
+        load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
+        make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
+        make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        host="h", cell_seconds=4.0, passes=2, timestamp=1_700_000_000.0,
+        sleep=clk.sleep, monotonic=clk.monotonic)
+    assert result is not None
+    assert len(result.samples) == 4                       # 2 cells × 2 passes
+    assert [s.cell for s in result.samples] == ["prefill", "decode", "prefill", "decode"]
+    assert result.model == "m1" and result.passes == 2 and result.cell_seconds == 4.0
+    assert result.meter_tier == "fake"                    # from the FakeMeterSource
+    assert all(s.tok_in > 0 for s in result.samples)      # load actually ran
+
+
+def test_run_campaign_aborts_loud_when_meter_source_unreachable():
+    def _dead_source(*_a, **_k):
+        s = FakeMeterSource([1.0])
+        s.reachable = lambda: (False, "ConnectError")   # type: ignore[attr-defined]
+        return s
+    result, msg = campaign.run_campaign(
+        cells=_cells(), model="m", load=FakeLoadClient(),
+        make_meter=lambda: FakeMeter(), make_source=_dead_source,
+        host="h", timestamp=0.0)
+    assert result is None and "unreachable" in msg.lower()
+
+
+def test_write_campaign_round_trips_json(tmp_path):
+    clk = _Clock()
+    result, _ = campaign.run_campaign(
+        cells=_cells(), model="m1",
+        load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
+        make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
+        make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        host="h", cell_seconds=4.0, passes=1, timestamp=1_700_000_000.0,
+        sleep=clk.sleep, monotonic=clk.monotonic)
+    out = os.path.join(tmp_path, "sub", "campaign.json")
+    campaign.write_campaign(result, out)
+    doc = json.load(open(out))
+    assert doc["model"] == "m1"
+    assert doc["meter"]["tier"] == "fake"
+    assert len(doc["samples"]) == 2
+    assert doc["samples"][0]["cell"] == "prefill"
+    assert "e_wall_marginal_j" in doc["samples"][0]
+    assert "requests" in doc["samples"][0]        # efficacy signal persisted for C2
+    assert "wall_w" in doc["idle"]
