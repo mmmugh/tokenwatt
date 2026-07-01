@@ -4,7 +4,9 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from statistics import median
+from typing import Callable
 
+from tokenwatt.battery import ChatResult
 from tokenwatt.meter import EnergyByRail, EnergyMeter
 from tokenwatt.metersource import MeterSource
 
@@ -112,3 +114,70 @@ def format_probe(r: ProbeResult) -> str:
         f"  wall/rail ratio (J/J): {ratio}      ← should be stable & > 1 across runs if trustworthy",
         cadence_line,
     ])
+
+
+@dataclass
+class IdleRates:
+    rail_w: dict[str, float]     # per-rail idle power (W)
+    wall_w: float                # idle wall power (W)
+    dt_s: float
+
+
+@dataclass
+class CellSample:
+    cell: str
+    model: str
+    dt_s: float
+    e_rail_marginal_j: dict[str, float]   # per-rail ΔE − idle_rail·dt, clamped ≥ 0
+    e_wall_marginal_j: float              # ΔWh·3600 − idle_wall·dt, clamped ≥ 0
+    tok_in: int | None                    # None if any request in the cell lacked usage
+    tok_out: int | None
+    requests: int                         # count of load calls — proof sustained load ran
+
+
+def measure_idle(meter: EnergyMeter, source: MeterSource, *, seconds: float = 300.0,
+                 sleep=time.sleep, monotonic=time.monotonic) -> IdleRates:
+    """Bracket an idle window (no inference) → per-rail idle watts + idle wall watts.
+    Defines the marginal baseline subtracted from every load cell."""
+    t0 = monotonic()
+    e0 = meter.cumulative()
+    w0 = source.read_accumulated_wh()
+    sleep(seconds)
+    dt = max(monotonic() - t0, 1e-9)
+    e_rail = meter.cumulative() - e0
+    wall_j = max(source.read_accumulated_wh() - w0, 0.0) * 3600.0
+    return IdleRates(rail_w={r: j / dt for r, j in e_rail.joules.items()},
+                     wall_w=wall_j / dt, dt_s=dt)
+
+
+def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], ChatResult],
+             idle: IdleRates, *, cell: str, model: str, seconds: float = 300.0,
+             sleep=time.sleep, monotonic=time.monotonic) -> CellSample:
+    """Drive `load_fn` in a loop for `seconds` while bracketing rail+wall energy,
+    then return the idle-subtracted marginal sample. `load_fn` is expected to
+    consume wall-clock time (a real HTTP request does; the fake advances the clock)."""
+    t0 = monotonic()
+    e0 = meter.cumulative()
+    w0 = source.read_accumulated_wh()
+    tok_in = tok_out = 0
+    requests = 0
+    any_unknown = False
+    while monotonic() - t0 < seconds:
+        r = load_fn()
+        requests += 1
+        if r.tok_in is None or r.tok_out is None:
+            any_unknown = True                 # honest: unknown, not a fabricated 0
+        else:
+            tok_in += r.tok_in
+            tok_out += r.tok_out
+    dt = max(monotonic() - t0, 1e-9)
+    e_rail = meter.cumulative() - e0
+    wall_j = max(source.read_accumulated_wh() - w0, 0.0) * 3600.0
+    rails = set(e_rail.joules) | set(idle.rail_w)
+    marg_rail = {r: max(e_rail.joules.get(r, 0.0) - idle.rail_w.get(r, 0.0) * dt, 0.0)
+                 for r in rails}
+    marg_wall = max(wall_j - idle.wall_w * dt, 0.0)
+    return CellSample(cell=cell, model=model, dt_s=dt, e_rail_marginal_j=marg_rail,
+                      e_wall_marginal_j=marg_wall,
+                      tok_in=None if any_unknown else tok_in,
+                      tok_out=None if any_unknown else tok_out, requests=requests)
