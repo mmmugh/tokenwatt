@@ -119,8 +119,9 @@ _PARAGRAPH = (
 
 
 def _prefill_prompt() -> str:
-    # ~4-6k tokens of context -> compute-bound prefill
-    return (_PARAGRAPH * 400) + "\nReply with a single word: acknowledged."
+    # ≈4k tokens of context -> compute-bound prefill (kept modest to fit small
+    # context windows; the point is a big prompt, not the largest possible one)
+    return (_PARAGRAPH * 120) + "\nReply with a single word: acknowledged."
 
 
 def _decode_prompt() -> str:
