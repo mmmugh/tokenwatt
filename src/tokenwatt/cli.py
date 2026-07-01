@@ -173,7 +173,8 @@ def calibrate_campaign(
     try:
         result, msg = campaign.run_campaign(
             cells=text_cells(), model=model, load=load, host=host, switch_id=sid,
-            password=password, cell_seconds=cell_seconds, passes=passes, timestamp=ts)
+            password=password, cell_seconds=cell_seconds, passes=passes, timestamp=ts,
+            on_progress=typer.echo)
     finally:
         load.close()
     typer.echo(msg, err=(result is None))

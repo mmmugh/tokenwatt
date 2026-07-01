@@ -181,8 +181,8 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
     marg_wall = max(wall_j - idle.wall_w * dt, 0.0)
     return CellSample(cell=cell, model=model, dt_s=dt, e_rail_marginal_j=marg_rail,
                       e_wall_marginal_j=marg_wall,
-                      tok_in=None if any_unknown else tok_in,
-                      tok_out=None if any_unknown else tok_out, requests=requests)
+                      tok_in=None if (any_unknown or requests == 0) else tok_in,
+                      tok_out=None if (any_unknown or requests == 0) else tok_out, requests=requests)
 
 
 _CAMPAIGN_SCHEMA = 1
@@ -207,6 +207,7 @@ def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
                  host: str, switch_id: int = 0,
                  password: str | None = None, cell_seconds: float = 300.0, passes: int = 2,
                  timestamp: float, idle_seconds: float | None = None,
+                 on_progress=lambda _m: None,
                  sleep=time.sleep, monotonic=time.monotonic) -> tuple["CampaignResult | None", str]:
     """Preflight, measure idle, then run each (cell × pass) as a sustained-load
     bracket. Returns (result, message); (None, reason) on preflight or read failure."""
@@ -219,18 +220,22 @@ def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
     except Exception as e:
         return None, (f"energy meter unavailable ({type(e).__name__}: {e}); "
                       f"run this on the Apple-Silicon Mac being calibrated")
+    phase = "idle baseline"
     try:
+        on_progress(f"measuring {phase} ({idle_seconds or cell_seconds:.0f}s)…")
         idle = measure_idle(meter, source, seconds=idle_seconds or cell_seconds,
                             sleep=sleep, monotonic=monotonic)
         samples: list[CellSample] = []
-        for _ in range(passes):
+        for p in range(passes):
             for cell in cells:
+                phase = f"cell {cell.name} pass {p + 1}/{passes}"
+                on_progress(f"{phase} ({cell_seconds:.0f}s)…")
                 samples.append(run_cell(
                     meter, source, lambda c=cell: load.chat(model, c.prompt, c.max_tokens),
                     idle, cell=cell.name, model=model, seconds=cell_seconds,
                     sleep=sleep, monotonic=monotonic))
     except Exception as e:
-        return None, f"campaign read failed ({type(e).__name__}: {e})"
+        return None, f"campaign read failed during {phase} ({type(e).__name__}: {e})"
     result = CampaignResult(
         model=model, meter_name=source.name, meter_tier=source.tier,
         meter_accuracy_pct=source.accuracy_pct, cell_seconds=cell_seconds, passes=passes,

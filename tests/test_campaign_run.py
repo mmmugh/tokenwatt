@@ -86,8 +86,32 @@ def test_run_cell_clamps_negative_marginals_to_zero():
     assert s.e_wall_marginal_j == 0.0
 
 
+def test_run_cell_zero_seconds_records_unknown_tokens_not_zero():
+    # a zero/negative `seconds` window runs no requests at all -> requests == 0.
+    # any_unknown never flips True in that case, so without the fix tok_in/tok_out
+    # would fall through to the fabricated `0` initializer instead of an honest None.
+    clk = _Clock()
+    meter = FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0}))
+    source = FakeMeterSource([1.0, 1.0])
+    idle = campaign.IdleRates(rail_w={"cpu_total": 0.0}, wall_w=0.0, dt_s=1.0)
+    def load_fn():
+        clk.sleep(2.0)
+        return ChatResult(tok_in=7, tok_out=11)
+    s = campaign.run_cell(meter, source, load_fn, idle, cell="prefill", model="m",
+                          seconds=0.0, sleep=clk.sleep, monotonic=clk.monotonic)
+    assert s.requests == 0
+    assert s.tok_in is None and s.tok_out is None    # never a fabricated 0
+
+
 def _cells():
     return [LoadCell("prefill", "p", 8), LoadCell("decode", "d", 1024)]
+
+
+class _RaisingLoad:
+    """A load client whose `chat` always fails mid-cell, to exercise the
+    named-failure-phase path in run_campaign."""
+    def chat(self, model, prompt, max_tokens):
+        raise RuntimeError("timeout")
 
 
 def test_run_campaign_collects_one_sample_per_cell_per_pass():
@@ -117,6 +141,48 @@ def test_run_campaign_aborts_loud_when_meter_source_unreachable():
         make_meter=lambda: FakeMeter(), make_source=_dead_source,
         host="h", timestamp=0.0)
     assert result is None and "unreachable" in msg.lower()
+
+
+def test_run_campaign_aborts_loud_when_meter_unavailable():
+    def _boom():
+        raise RuntimeError("no zeus")
+    result, msg = campaign.run_campaign(
+        cells=_cells(), model="m", load=FakeLoadClient(),
+        make_meter=_boom, make_source=lambda *_a, **_k: FakeMeterSource([1.0]),
+        host="h", timestamp=0.0)
+    assert result is None
+    assert "meter unavailable" in msg.lower()
+
+
+def test_run_campaign_read_failure_names_the_phase():
+    clk = _Clock()
+    result, msg = campaign.run_campaign(
+        cells=_cells(), model="m", load=_RaisingLoad(),
+        make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
+        make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        host="h", cell_seconds=4.0, passes=1, timestamp=0.0,
+        sleep=clk.sleep, monotonic=clk.monotonic)
+    assert result is None
+    assert "campaign read failed during" in msg
+    assert "prefill" in msg                          # names the failing cell, not just the type
+
+
+def test_run_campaign_emits_progress_per_phase():
+    clk = _Clock()
+    events: list[str] = []
+    result, msg = campaign.run_campaign(
+        cells=_cells(), model="m1",
+        load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
+        make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
+        make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        host="h", cell_seconds=4.0, passes=1, timestamp=0.0,
+        on_progress=events.append,
+        sleep=clk.sleep, monotonic=clk.monotonic)
+    assert result is not None
+    assert len(events) >= 3                           # idle + 2 cells
+    assert any("idle" in e.lower() for e in events)
+    assert any("prefill" in e for e in events)
+    assert any("decode" in e for e in events)
 
 
 def test_write_campaign_round_trips_json(tmp_path):
