@@ -133,6 +133,63 @@ def calibrate_probe(
     typer.echo(campaign.format_probe(result))
 
 
+@calibrate_app.command("campaign")
+def calibrate_campaign(
+    meter_host: Optional[str] = typer.Option(None, "--meter-host", help="Shelly smart plug host/IP"),
+    meter_id: int = typer.Option(0, "--meter-id", help="RPC Switch component id"),
+    upstream: Optional[str] = typer.Option(None, "--upstream", help="inference server base URL (http://host:port)"),
+    model: Optional[str] = typer.Option(None, "--model", help="model id to send in requests"),
+    cell_seconds: float = typer.Option(300.0, "--cell-seconds", help="sustained-load seconds per cell (keep >> plug cadence)"),
+    passes: int = typer.Option(2, "--passes", help="battery repeats (repeatability)"),
+    out: Optional[str] = typer.Option(None, "--out", help="where to write the samples JSON"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="read meter host from this config"),
+):
+    """Run the Core-4 text load battery, capture idle-subtracted marginal rail/wall
+    samples, and write them for the C2 fit. RAW sample collection — not a calibration."""
+    import os
+    import time as _time
+    from tokenwatt import campaign
+    from tokenwatt.battery import text_cells, HttpLoadClient
+    from tokenwatt.config import load_config, ConfigError
+
+    host, sid, password = meter_host, meter_id, None
+    if host is None and config is not None:
+        try:
+            cfg = load_config(config)
+        except ConfigError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+        host, sid, password = cfg.calibration.meter_host, cfg.calibration.meter_id, cfg.calibration.meter_password
+    if not host:
+        typer.echo("no meter host — pass --meter-host or set calibration.meter_host in your config", err=True)
+        raise typer.Exit(1)
+    if not upstream or not model:
+        typer.echo("both --upstream and --model are required (the load battery hits that model on that server)", err=True)
+        raise typer.Exit(1)
+
+    ts = _time.time()
+    out_path = out or os.path.expanduser(f"~/.tokenwatt/calibration/campaign-{int(ts)}.json")
+    load = HttpLoadClient(upstream)
+    try:
+        result, msg = campaign.run_campaign(
+            cells=text_cells(), model=model, load=load, host=host, switch_id=sid,
+            password=password, cell_seconds=cell_seconds, passes=passes, timestamp=ts,
+            make_meter=campaign._default_meter, make_source=campaign._default_shelly)
+    finally:
+        load.close()
+    typer.echo(msg, err=(result is None))
+    if result is None:
+        raise typer.Exit(1)
+    campaign.write_campaign(result, out_path)
+    typer.echo(f"wrote {out_path}")
+    typer.echo(f"idle: wall {result.idle.wall_w:.2f} W, rails {result.idle.rail_w}")
+    for s in result.samples:
+        tok = "unknown" if s.tok_in is None else f"{s.tok_in}/{s.tok_out}"   # never a fake 0
+        typer.echo(f"  {s.cell:<9} marg wall {s.e_wall_marginal_j:8.1f} J   "
+                   f"rail {sum(s.e_rail_marginal_j.values()):7.1f} J   "
+                   f"req {s.requests:>3}   tok {tok}")
+
+
 @app.command()
 def report(ledger: str = typer.Option("~/.tokenwatt/ledger.sqlite", "--ledger")):
     """Show today/month electricity cost and a per-model breakdown."""

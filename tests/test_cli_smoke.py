@@ -43,3 +43,15 @@ def test_calibrate_probe_failure_reason_goes_to_stderr(monkeypatch):
     assert res.exit_code == 1
     assert "meter unreachable: ConnectError" in res.stderr
     assert "meter unreachable: ConnectError" not in res.stdout
+
+
+def test_calibrate_campaign_help_lists_upstream_and_model():
+    res = runner.invoke(app, ["calibrate", "campaign", "--help"])
+    assert res.exit_code == 0
+    assert "--upstream" in res.output and "--model" in res.output
+
+
+def test_calibrate_campaign_requires_upstream_and_model():
+    res = runner.invoke(app, ["calibrate", "campaign", "--meter-host", "h"])
+    assert res.exit_code == 1
+    assert "upstream" in res.output.lower() or "model" in res.output.lower()
