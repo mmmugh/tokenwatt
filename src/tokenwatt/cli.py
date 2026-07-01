@@ -222,8 +222,10 @@ def calibrate_fit(
         try:
             from tokenwatt.metersource import ShellyMeterSource
             src = ShellyMeterSource(meter_host)
-            meter.update({k: v for k, v in src.device_info().items() if v is not None})
-            src.close()
+            try:
+                meter.update({k: v for k, v in src.device_info().items() if v is not None})
+            finally:
+                src.close()
         except Exception as e:
             typer.echo(f"(note: could not read device identity from {meter_host}: {type(e).__name__})", err=True)
 
