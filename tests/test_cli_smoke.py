@@ -29,3 +29,17 @@ def test_calibrate_probe_without_host_fails_loud():
     res = runner.invoke(app, ["calibrate", "probe"])
     assert res.exit_code == 1
     assert "meter host" in res.output.lower()
+
+
+def test_calibrate_probe_failure_reason_goes_to_stderr(monkeypatch):
+    # run_probe's (None, reason) is a failure — it must land on stderr like every other
+    # CLI error path (no-host / config-error), not stdout, so scripts piping stdout don't
+    # silently swallow the diagnostic.
+    import tokenwatt.campaign as campaign
+
+    monkeypatch.setattr(campaign, "run_probe",
+                        lambda **_k: (None, "meter unreachable: ConnectError"))
+    res = runner.invoke(app, ["calibrate", "probe", "--meter-host", "h"])
+    assert res.exit_code == 1
+    assert "meter unreachable: ConnectError" in res.stderr
+    assert "meter unreachable: ConnectError" not in res.stdout

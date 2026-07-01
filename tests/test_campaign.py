@@ -102,3 +102,21 @@ def test_run_probe_degrades_when_rail_meter_unavailable():
     result, msg = campaign.run_probe(host="h", make_source=_ok_source, make_meter=_boom)
     assert result is None
     assert "meter" in msg.lower()
+
+
+def test_format_probe_hints_when_cadence_not_observed():
+    # window was too short to see the plug's accumulator change >=2 times: resolution/cadence
+    # come back None. Printing bare dashes next to "pick C1 cell length well above this" is
+    # self-contradictory (there's nothing to compare against) — must be an actionable hint
+    # instead, and the "pick C1 cell length" phrasing must be gone (there is no measured cadence
+    # to pick above).
+    r = campaign.ProbeResult(
+        dt_s=2.0, wall_wh=0.0, wall_w=0.0, rail_total_j=40.0, rail_w=20.0,
+        rail_by_rail_j={"cpu_total": 40.0}, ratio_wall_over_rail=None,
+        meter_resolution_wh=None, meter_cadence_s=None, n_samples=5)
+    out = campaign.format_probe(r)
+    assert "not observed" in out
+    assert "larger --seconds" in out
+    assert "pick C1 cell length" not in out
+    # honesty boundary still holds even in the under-window case
+    assert "calibrated" not in out.lower()

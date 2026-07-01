@@ -95,12 +95,20 @@ def run_probe(*, host: str, switch_id: int = 0, password: str | None = None,
 def format_probe(r: ProbeResult) -> str:
     rails = "  ".join(f"{k}={v:.1f}J" for k, v in sorted(r.rail_by_rail_j.items()))
     ratio = f"{r.ratio_wall_over_rail:.3f}" if r.ratio_wall_over_rail is not None else "—"
-    res = f"{r.meter_resolution_wh:.4f} Wh" if r.meter_resolution_wh is not None else "—"
-    cad = f"{r.meter_cadence_s:.2f} s" if r.meter_cadence_s is not None else "—"
+    if r.meter_resolution_wh is None or r.meter_cadence_s is None:
+        # the window was too short to see the accumulator change >=2 times — bare dashes next
+        # to "pick C1 cell length well above this" would be self-contradictory (nothing to
+        # compare against), so print an actionable hint instead.
+        cadence_line = ("  plug resolution/cadence: not observed — the window was shorter than "
+                        "the plug's energy-counter update interval; re-run with a larger --seconds")
+    else:
+        res = f"{r.meter_resolution_wh:.4f} Wh"
+        cad = f"{r.meter_cadence_s:.2f} s"
+        cadence_line = f"  plug resolution: {res}   update cadence: {cad}   ← pick C1 cell length well above this"
     return "\n".join([
         f"probe window: {r.dt_s:.1f}s, {r.n_samples} samples  (RAW diagnostic — not a calibration)",
         f"  wall (plug): {r.wall_wh:.4f} Wh   avg {r.wall_w:.2f} W",
         f"  rail (zeus): {r.rail_total_j:.1f} J   avg {r.rail_w:.2f} W   [{rails}]",
         f"  wall/rail ratio (J/J): {ratio}      ← should be stable & > 1 across runs if trustworthy",
-        f"  plug resolution: {res}   update cadence: {cad}   ← pick C1 cell length well above this",
+        cadence_line,
     ])

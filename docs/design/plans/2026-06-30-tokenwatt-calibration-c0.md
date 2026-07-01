@@ -737,7 +737,7 @@ git commit -m "feat(calib): tokenwatt calibrate probe (synchronized rail/wall di
 Not a CI step — the human/operator validation that closes C0 and feeds C1.
 
 1. Put the plug host in `~/.tokenwatt/tokenwatt.yaml` under `calibration: { meter_host: <ip> }` (or pass `--meter-host`).
-2. With the Mac idle: `tokenwatt calibrate probe --meter-host <ip> --seconds 20`. Note the idle wall W and the reported **plug resolution + cadence**.
+2. With the Mac idle: `tokenwatt calibrate probe --meter-host <ip> --seconds 180`. The window must exceed the plug's energy-counter update interval or `meter_resolution_wh`/`meter_cadence_s` come back unobserved; the Gen4's `Switch.GetStatus` carries `by_minute`/`minute_ts`, hinting a ~1-minute cadence, so a short window (e.g. 20s) sees no accumulator change at all. Note the idle wall W and the reported **plug resolution + cadence**.
 3. Repeat under sustained load (e.g. a `decode`-style generation in another terminal). Confirm: wall W rises, rail J rises, and the **wall/rail ratio is > 1 and roughly stable** between two back-to-back runs.
 4. Cross-check the wall Wh delta against the Shelly app's own energy reading for the same interval — they should agree.
 5. **Record the measured cadence/resolution** — it sets the minimum C1 cell duration (windows must be well above the cadence so the accumulator delta dwarfs its resolution).

@@ -102,7 +102,7 @@ app.add_typer(calibrate_app, name="calibrate")
 def calibrate_probe(
     meter_host: Optional[str] = typer.Option(None, "--meter-host", help="Shelly smart plug host/IP"),
     meter_id: int = typer.Option(0, "--meter-id", help="RPC Switch component id"),
-    seconds: float = typer.Option(30.0, "--seconds", help="window length; generate load during it"),
+    seconds: float = typer.Option(60.0, "--seconds", help="window length; generate load during it"),
     poll: float = typer.Option(0.5, "--poll", help="accumulator poll interval (s)"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="read meter host from this config"),
 ):
@@ -127,7 +127,7 @@ def calibrate_probe(
 
     result, msg = campaign.run_probe(host=host, switch_id=switch_id, password=password,
                                      seconds=seconds, poll_s=poll)
-    typer.echo(msg)
+    typer.echo(msg, err=(result is None))
     if result is None:
         raise typer.Exit(1)
     typer.echo(campaign.format_probe(result))
