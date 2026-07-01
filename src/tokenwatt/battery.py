@@ -50,8 +50,8 @@ def text_cells() -> list[LoadCell]:
 
 @dataclass(frozen=True)
 class ChatResult:
-    tok_in: int
-    tok_out: int
+    tok_in: int | None      # None when the upstream reports no usage — never a fabricated 0
+    tok_out: int | None
 
 
 @runtime_checkable
@@ -77,9 +77,12 @@ class HttpLoadClient:
             timeout=self._timeout,
         )
         r.raise_for_status()
-        usage = r.json().get("usage", {})
-        return ChatResult(tok_in=int(usage.get("prompt_tokens", 0)),
-                          tok_out=int(usage.get("completion_tokens", 0)))
+        usage = r.json().get("usage")            # None if the key is missing OR explicitly null
+        if not usage:                            # None / null / {} -> unknown, NOT a fabricated 0
+            return ChatResult(tok_in=None, tok_out=None)
+        pin, pout = usage.get("prompt_tokens"), usage.get("completion_tokens")
+        return ChatResult(tok_in=int(pin) if pin is not None else None,
+                          tok_out=int(pout) if pout is not None else None)
 
     def close(self) -> None:
         if self._own:

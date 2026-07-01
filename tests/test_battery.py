@@ -67,6 +67,18 @@ def test_http_load_client_raises_on_http_error():
         HttpLoadClient("http://up", client=client).chat("m1", "hi", max_tokens=8)
 
 
+def test_http_load_client_returns_none_when_usage_missing():
+    # some local servers omit `usage` on non-streaming responses — never fabricate a 0
+    client, _ = _mock_chat({"choices": [{"message": {"content": "ok"}}]})
+    assert HttpLoadClient("http://up", client=client).chat("m", "p", 8) == ChatResult(None, None)
+
+
+def test_http_load_client_tolerates_null_usage():
+    # `"usage": null` (key present, value null) must not crash and must read as unknown
+    client, _ = _mock_chat({"choices": [], "usage": None})
+    assert HttpLoadClient("http://up", client=client).chat("m", "p", 8) == ChatResult(None, None)
+
+
 def test_http_load_client_satisfies_protocol():
     client, _ = _mock_chat(_CHAT_BODY)
     assert isinstance(HttpLoadClient("http://up", client=client), LoadClient)
