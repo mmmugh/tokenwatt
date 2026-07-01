@@ -536,7 +536,7 @@ git commit -m "feat(calib): idle baseline + per-cell marginal bracketing"
 - Consumes: `IdleRates`, `CellSample`, `measure_idle`, `run_cell` (Task 3); `LoadCell`, `LoadClient` (`battery.py`).
 - Produces:
   - `CampaignResult(model, meter_name, meter_tier, meter_accuracy_pct, cell_seconds, passes, idle: IdleRates, samples: list[CellSample], schema_version: int, timestamp: float)`.
-  - `run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient, make_meter, make_source, host, switch_id=0, password=None, cell_seconds=300.0, passes=2, timestamp, idle_seconds=None, sleep=time.sleep, monotonic=time.monotonic) -> tuple[CampaignResult | None, str]` — preflight (reachable + meter), measure idle, run each `(cell × pass)`, collect samples; `(None, reason)` on preflight failure or a mid-window read error.
+  - `run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient, make_meter=_default_meter, make_source=_default_shelly, host, switch_id=0, password=None, cell_seconds=300.0, passes=2, timestamp, idle_seconds=None, sleep=time.sleep, monotonic=time.monotonic) -> tuple[CampaignResult | None, str]` — `make_meter`/`make_source` default to the same private constructors `run_probe` uses, so the CLI calls it without them (a true mirror of `run_probe`). — preflight (reachable + meter), measure idle, run each `(cell × pass)`, collect samples; `(None, reason)` on preflight failure or a mid-window read error.
   - `campaign_to_dict(result: CampaignResult) -> dict` and `write_campaign(result: CampaignResult, path: str) -> None` (JSON, dirs auto-created).
 
 - [ ] **Step 1: Write the failing test**
@@ -634,8 +634,9 @@ class CampaignResult:
 
 
 def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
-                 make_meter, make_source, host: str, switch_id: int = 0,
-                 password: str | None = None, cell_seconds: float = 300.0, passes: int = 2,
+                 make_meter=_default_meter, make_source=_default_shelly, host: str,
+                 switch_id: int = 0, password: str | None = None,
+                 cell_seconds: float = 300.0, passes: int = 2,
                  timestamp: float, idle_seconds: float | None = None,
                  sleep=time.sleep, monotonic=time.monotonic) -> tuple["CampaignResult | None", str]:
     """Preflight, measure idle, then run each (cell × pass) as a sustained-load
