@@ -737,18 +737,22 @@ def test_calibrate_fit_writes_a_profile_from_a_campaign(tmp_path, monkeypatch):
     }
     cpath = tmp_path / "campaign.json"
     cpath.write_text(_json.dumps(campaign))
-    # deterministic machine, no real sysctl
+    # deterministic machine identity, independent of the CI runner. NOTE: patching
+    # machineid._real_sysctl is INERT — detect_machine's `sysctl=` default is bound to the
+    # function object at def time, so reassigning the module attr does nothing. Patch
+    # detect_machine itself (the local `from tokenwatt.machineid import detect_machine` in the
+    # command re-fetches it at call time). Use a DISTINCTLY-fake machine so a real runner
+    # (even an M3 Ultra) can't make this pass by coincidence.
     from tokenwatt import machineid
-    monkeypatch.setattr(machineid, "_real_sysctl",
-                        lambda key: {"machdep.cpu.brand_string": "Apple M3 Ultra",
-                                     "hw.model": "Mac15,14",
-                                     "hw.memsize": str(96 * 1024**3)}[key])
-    monkeypatch.setattr(machineid.platform, "mac_ver", lambda: ("26.5.1", ("", "", ""), ""))
+    from tokenwatt.machineid import MachineInfo
+    fake = MachineInfo("testmac_apple-test_16gb_macos99", "Apple Test · 16 GB · TestMac",
+                       "Apple Test", "TestMac", 16, "99")
+    monkeypatch.setattr(machineid, "detect_machine", lambda: fake)
 
     res = runner.invoke(app, ["calibrate", "fit", str(cpath), "--out", str(tmp_path / "profiles")])
     assert res.exit_code == 0, res.output
     assert "plug-calibrated" in res.output
-    prof = _json.load(open(tmp_path / "profiles" / "mac15-14_apple-m3-ultra_96gb_macos26.json"))
+    prof = _json.load(open(tmp_path / "profiles" / "testmac_apple-test_16gb_macos99.json"))
     assert prof["fit_type"] == "scalar"
     assert 1.8 <= prof["coefficients"]["a"] <= 2.2      # slope recovered
     assert prof["model_calibrated_on"] == "qwen3.6-27b"
@@ -790,7 +794,11 @@ def calibrate_fit(
     with open(path) as f:
         camp = json.load(f)
 
-    result = calibration.fit(camp)
+    try:
+        result = calibration.fit(camp)
+    except RuntimeError as e:                     # nnls non-convergence — fail loud, not a traceback
+        typer.echo(f"calibration did not converge: {e}", err=True)
+        raise typer.Exit(1)
     machine = detect_machine()
     meter = dict(camp["meter"])
     if meter_host:                       # best-effort exact device identity
