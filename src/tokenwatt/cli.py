@@ -190,6 +190,53 @@ def calibrate_campaign(
                    f"req {s.requests:>3}   tok {tok}")
 
 
+@calibrate_app.command("fit")
+def calibrate_fit(
+    campaign: str = typer.Argument(..., help="path to a `calibrate campaign` samples JSON"),
+    out: Optional[str] = typer.Option(None, "--out", help="profiles dir (default ~/.tokenwatt/profiles)"),
+    meter_host: Optional[str] = typer.Option(None, "--meter-host", help="enrich exact device identity via Shelly.GetDeviceInfo (best-effort)"),
+):
+    """Fit a campaign dataset into this machine's calibration profile (scalar).
+    The confidence band is MEASURED (fit residual ⊕ pass repeatability ⊕ meter accuracy)."""
+    import json
+    import os
+    import time as _time
+    from tokenwatt import calibration, profiles
+    from tokenwatt.machineid import detect_machine
+
+    path = os.path.expanduser(campaign)
+    if not os.path.isfile(path):
+        typer.echo(f"campaign file not found: {campaign}", err=True)
+        raise typer.Exit(1)
+    with open(path) as f:
+        camp = json.load(f)
+
+    try:
+        result = calibration.fit(camp)
+    except RuntimeError as e:                     # nnls non-convergence — fail loud, not a traceback
+        typer.echo(f"calibration did not converge: {e}", err=True)
+        raise typer.Exit(1)
+    machine = detect_machine()
+    meter = dict(camp["meter"])
+    if meter_host:                       # best-effort exact device identity
+        try:
+            from tokenwatt.metersource import ShellyMeterSource
+            src = ShellyMeterSource(meter_host)
+            meter.update({k: v for k, v in src.device_info().items() if v is not None})
+            src.close()
+        except Exception as e:
+            typer.echo(f"(note: could not read device identity from {meter_host}: {type(e).__name__})", err=True)
+
+    profile = profiles.profile_from(result, machine, meter,
+                                    model_calibrated_on=camp.get("model", "?"), created_at=_time.time())
+    saved = profiles.save(profile, root=out)
+    typer.echo(f"machine: {machine.label}")
+    typer.echo(f"fit (scalar): wall_J ≈ {result.a:.3f}·rail_J + {result.b:.3f}·Δt   "
+               f"residual {result.residual_rel*100:.1f}%   repeatability {result.run_variance_rel*100:.1f}%")
+    typer.echo(f"tier: {result.tier}")
+    typer.echo(f"wrote {saved}")
+
+
 @app.command()
 def report(ledger: str = typer.Option("~/.tokenwatt/ledger.sqlite", "--ledger")):
     """Show today/month electricity cost and a per-model breakdown."""

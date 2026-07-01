@@ -79,6 +79,14 @@ class ShellyMeterSource:
     def read_accumulated_wh(self) -> float:
         return self.read_status().total_wh
 
+    def device_info(self) -> dict:
+        base = self._host if "://" in self._host else f"http://{self._host}"
+        r = self._client.get(f"{base}/rpc/Shelly.GetDeviceInfo", timeout=self._timeout)
+        r.raise_for_status()
+        b = r.json()
+        return {"model": b.get("model"), "gen": b.get("gen"),
+                "mac": b.get("mac"), "app": b.get("app")}
+
     def reachable(self) -> tuple[bool, str]:
         try:
             s = self.read_status()

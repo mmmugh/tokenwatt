@@ -82,3 +82,10 @@ def test_shelly_reachable_false_on_http_error():
     ok, detail = ShellyMeterSource("h", client=client).reachable()
     assert ok is False
     assert "500" in detail or "Error" in detail
+
+
+def test_shelly_device_info_parses_model_gen_mac():
+    body = {"model": "S4PL-00116US", "gen": 4, "mac": "AABBCCDDEEFF", "app": "PlugUSG4"}
+    client, _ = _mock_shelly(body)      # existing helper returns (client, seen)
+    info = ShellyMeterSource("h", client=client).device_info()
+    assert info["model"] == "S4PL-00116US" and info["gen"] == 4 and info["app"] == "PlugUSG4"
