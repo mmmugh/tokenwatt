@@ -17,6 +17,7 @@
 - **Apple-Silicon gated, fail-soft:** `ZeusMeter` constructs only on the Mac being calibrated; off-platform `run_campaign` degrades with a clear `(None, reason)`, never crashes. Fakes run anywhere.
 - **Cell duration is cadence-bound:** the plug's measured accumulator cadence on the M3 Ultra is **~66 s**, so the default cell duration is **300 s (~4.5×)** and default **passes = 2** — a cell window must comfortably exceed the cadence or its wall Δ is quantization noise.
 - **Non-streaming load:** load requests set `stream=false` + `max_tokens`, so `usage.{prompt,completion}_tokens` is read straight from the response body.
+- **Tokens are honest-or-unknown, never a fake 0:** an upstream that omits/nulls `usage` yields `ChatResult(tok_in=None, tok_out=None)` — a cell with any unknown request records `tok_in/tok_out = None` (rendered distinctly, never `0`), matching the project's "never a fabricated number" contract. Tokens are **bookkeeping/validity only** — the fit uses energy. Every cell ALSO records a `requests` count (usage-independent) as the always-available proof that sustained load ran.
 - **Deterministic CI:** the whole campaign path runs under `FakeMeter` + `FakeMeterSource` + `FakeLoadClient` + an injected clock — no network, no hardware, no real wall-clock sleeps in tests.
 - **`VERSION` auto-bumps** its patch every commit via `.githooks/pre-commit` — expected; let it run. Never `--no-verify`.
 - **Leak-safety:** no numeric/private IPs in code, tests, or docs (a pre-commit leak-scan blocks them); test hosts use `"h"`/`shelly.local`.
@@ -165,7 +166,7 @@ git commit -m "feat(calib): Core-4 text load cells + standardized prompts"
 **Interfaces:**
 - Consumes: nothing new.
 - Produces:
-  - `ChatResult(tok_in: int, tok_out: int)` — frozen dataclass.
+  - `ChatResult(tok_in: int | None, tok_out: int | None)` — frozen dataclass; `None` means the upstream reported no usage (never a fabricated `0`).
   - `LoadClient` — `@runtime_checkable` Protocol: `chat(self, model: str, prompt: str, max_tokens: int) -> ChatResult`.
   - `HttpLoadClient(upstream: str, client: httpx.Client | None = None, timeout: float = 120.0)` with `chat(...)` (POST `{upstream}/v1/chat/completions`, `stream=false`, reads `usage`) and `close()`.
   - `FakeLoadClient(tok_in: int = 100, tok_out: int = 50, latency_s: float = 1.0, clock=None)` — returns a fixed `ChatResult`; if `clock` is given, advances it by `latency_s` per `chat()` (so `run_cell`'s wall-clock loop terminates under a fake clock, the way a real HTTP request consumes real time).
@@ -212,6 +213,18 @@ def test_http_load_client_raises_on_http_error():
         HttpLoadClient("http://up", client=client).chat("m1", "hi", max_tokens=8)
 
 
+def test_http_load_client_returns_none_when_usage_missing():
+    # some local servers omit `usage` on non-streaming responses — never fabricate a 0
+    client, _ = _mock_chat({"choices": [{"message": {"content": "ok"}}]})
+    assert HttpLoadClient("http://up", client=client).chat("m", "p", 8) == ChatResult(None, None)
+
+
+def test_http_load_client_tolerates_null_usage():
+    # `"usage": null` (key present, value null) must not crash and must read as unknown
+    client, _ = _mock_chat({"choices": [], "usage": None})
+    assert HttpLoadClient("http://up", client=client).chat("m", "p", 8) == ChatResult(None, None)
+
+
 def test_http_load_client_satisfies_protocol():
     client, _ = _mock_chat(_CHAT_BODY)
     assert isinstance(HttpLoadClient("http://up", client=client), LoadClient)
@@ -246,8 +259,8 @@ import httpx
 
 @dataclass(frozen=True)
 class ChatResult:
-    tok_in: int
-    tok_out: int
+    tok_in: int | None      # None when the upstream reports no usage — never a fabricated 0
+    tok_out: int | None
 
 
 @runtime_checkable
@@ -273,9 +286,12 @@ class HttpLoadClient:
             timeout=self._timeout,
         )
         r.raise_for_status()
-        usage = r.json().get("usage", {})
-        return ChatResult(tok_in=int(usage.get("prompt_tokens", 0)),
-                          tok_out=int(usage.get("completion_tokens", 0)))
+        usage = r.json().get("usage")            # None if the key is missing OR explicitly null
+        if not usage:                            # None / null / {} -> unknown, NOT a fabricated 0
+            return ChatResult(tok_in=None, tok_out=None)
+        pin, pout = usage.get("prompt_tokens"), usage.get("completion_tokens")
+        return ChatResult(tok_in=int(pin) if pin is not None else None,
+                          tok_out=int(pout) if pout is not None else None)
 
     def close(self) -> None:
         if self._own:
@@ -322,7 +338,7 @@ git commit -m "feat(calib): LoadClient (HTTP chat driver + fake)"
 - Consumes: `EnergyByRail`, `EnergyMeter` (`meter.py`); `MeterSource` (`metersource.py`); `ChatResult` (`battery.py`).
 - Produces:
   - `IdleRates(rail_w: dict[str, float], wall_w: float, dt_s: float)`.
-  - `CellSample(cell: str, model: str, dt_s: float, e_rail_marginal_j: dict[str, float], e_wall_marginal_j: float, tok_in: int, tok_out: int)`.
+  - `CellSample(cell: str, model: str, dt_s: float, e_rail_marginal_j: dict[str, float], e_wall_marginal_j: float, tok_in: int | None, tok_out: int | None, requests: int)` — `requests` is the count of load calls (always known, usage-independent); `tok_*` is `None` if any request lacked usage.
   - `measure_idle(meter, source, *, seconds: float = 300.0, sleep=time.sleep, monotonic=time.monotonic) -> IdleRates` — bracket an idle window, return per-rail idle watts + idle wall watts.
   - `run_cell(meter, source, load_fn, idle: IdleRates, *, cell: str, model: str, seconds: float = 300.0, sleep=time.sleep, monotonic=time.monotonic) -> CellSample` — where `load_fn: Callable[[], ChatResult]` is called in a loop for `seconds`; returns the marginal sample.
 
@@ -377,10 +393,28 @@ def test_run_cell_brackets_load_and_subtracts_idle_from_both_sides():
     assert s.dt_s == pytest.approx(10.0)
     # 5 load calls fit in 10 s at 2 s each
     assert (s.tok_in, s.tok_out) == (35, 55)
+    assert s.requests == 5                          # always-known load-validity signal
     # marginal rail = ΔE_rail − idle_rail·dt = 10 − 0.5·10 = 5 J
     assert s.e_rail_marginal_j == {"cpu_total": pytest.approx(5.0)}
     # marginal wall = ΔWh·3600 − idle_wall·dt = 360 − 3·10 = 330 J
     assert s.e_wall_marginal_j == pytest.approx(330.0)
+
+
+def test_run_cell_records_tokens_unknown_but_still_counts_requests():
+    # an upstream that withholds usage -> tok_in/out None (never a fake 0), but the
+    # request count still proves sustained load ran (the efficacy signal)
+    clk = _Clock()
+    meter = FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0}))
+    source = FakeMeterSource([1.0, 1.1])
+    idle = campaign.IdleRates(rail_w={"cpu_total": 0.0}, wall_w=0.0, dt_s=1.0)
+    def load_fn():
+        clk.sleep(2.0)
+        return ChatResult(tok_in=None, tok_out=None)
+    s = campaign.run_cell(meter, source, load_fn, idle, cell="decode", model="m",
+                          seconds=6.0, sleep=clk.sleep, monotonic=clk.monotonic)
+    assert s.tok_in is None and s.tok_out is None    # honest unknown, not 0
+    assert s.requests == 3                            # load still ran and was counted
+    assert s.e_wall_marginal_j >= 0.0                # energy sample still valid
 
 
 def test_run_cell_clamps_negative_marginals_to_zero():
@@ -425,8 +459,9 @@ class CellSample:
     dt_s: float
     e_rail_marginal_j: dict[str, float]   # per-rail ΔE − idle_rail·dt, clamped ≥ 0
     e_wall_marginal_j: float              # ΔWh·3600 − idle_wall·dt, clamped ≥ 0
-    tok_in: int
-    tok_out: int
+    tok_in: int | None                    # None if any request in the cell lacked usage
+    tok_out: int | None
+    requests: int                         # count of load calls — proof sustained load ran
 
 
 def measure_idle(meter: EnergyMeter, source: MeterSource, *, seconds: float = 300.0,
@@ -454,10 +489,16 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
     e0 = meter.cumulative()
     w0 = source.read_accumulated_wh()
     tok_in = tok_out = 0
+    requests = 0
+    any_unknown = False
     while monotonic() - t0 < seconds:
         r = load_fn()
-        tok_in += r.tok_in
-        tok_out += r.tok_out
+        requests += 1
+        if r.tok_in is None or r.tok_out is None:
+            any_unknown = True                 # honest: unknown, not a fabricated 0
+        else:
+            tok_in += r.tok_in
+            tok_out += r.tok_out
     dt = max(monotonic() - t0, 1e-9)
     e_rail = meter.cumulative() - e0
     wall_j = max(source.read_accumulated_wh() - w0, 0.0) * 3600.0
@@ -466,7 +507,9 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
                  for r in rails}
     marg_wall = max(wall_j - idle.wall_w * dt, 0.0)
     return CellSample(cell=cell, model=model, dt_s=dt, e_rail_marginal_j=marg_rail,
-                      e_wall_marginal_j=marg_wall, tok_in=tok_in, tok_out=tok_out)
+                      e_wall_marginal_j=marg_wall,
+                      tok_in=None if any_unknown else tok_in,
+                      tok_out=None if any_unknown else tok_out, requests=requests)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -556,6 +599,7 @@ def test_write_campaign_round_trips_json(tmp_path):
     assert len(doc["samples"]) == 2
     assert doc["samples"][0]["cell"] == "prefill"
     assert "e_wall_marginal_j" in doc["samples"][0]
+    assert "requests" in doc["samples"][0]        # efficacy signal persisted for C2
     assert "wall_w" in doc["idle"]
 ```
 
@@ -745,9 +789,10 @@ def calibrate_campaign(
     typer.echo(f"wrote {out_path}")
     typer.echo(f"idle: wall {result.idle.wall_w:.2f} W, rails {result.idle.rail_w}")
     for s in result.samples:
+        tok = "unknown" if s.tok_in is None else f"{s.tok_in}/{s.tok_out}"   # never a fake 0
         typer.echo(f"  {s.cell:<9} marg wall {s.e_wall_marginal_j:8.1f} J   "
                    f"rail {sum(s.e_rail_marginal_j.values()):7.1f} J   "
-                   f"tok {s.tok_in}/{s.tok_out}")
+                   f"req {s.requests:>3}   tok {tok}")
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -790,7 +835,7 @@ Not CI — the operator run that closes C1 and produces the first real sample se
 - Load cells `prefill`/`decode`/`balanced` with the specified prompt/token shapes → Task 1; `idle` measured separately → Task 3 `measure_idle`. `embeddings`/`vision` explicitly deferred (Core-4 per the user; documented).
 - Standardized, deterministic, in-package prompts; model is the variable → Task 1 + the `--model`/`--upstream` CLI.
 - Sustained load loop for a fixed `Δt` → Task 3 `run_cell`.
-- Sample shape `{cell, model, dt, e_rail_marginal{...}, e_wall_marginal, tok_in, tok_out}` → Task 3 `CellSample` (matches spec §6 verbatim).
+- Sample shape `{cell, model, dt, e_rail_marginal{...}, e_wall_marginal, tok_in, tok_out}` → Task 3 `CellSample`, refined per the honesty contract: `tok_*` are `int | None` (unknown, never a fake 0, when a server omits `usage`) and a `requests` count is added (usage-independent proof sustained load ran). Tokens are validity/bookkeeping — the fit uses energy; runtime $/token is computed separately by the proxy from real traffic.
 - Idle measured at **both** rails and wall; marginal subtraction on both sides → Task 3 `measure_idle` + `run_cell`; energy Wh→J ×3600; clamp ≥0.
 - Persisted for the C2 fit → Task 4 `write_campaign` (single JSON per campaign, with meter/idle/samples + `schema_version`).
 - Honesty: no fit, no band, no `calibrated` label anywhere → constraint enforced; CLI prints raw marginals only.
