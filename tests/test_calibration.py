@@ -25,7 +25,7 @@ def test_fit_scalar_recovers_slope_from_real_c1_data():
             (13637.3, 26578.2), (25751.2, 45346.7), (24891.2, 44511.0)]
     samples = [_sample("c", r, w) for r, w in real]
     a, b, res = cal.fit_scalar(samples)
-    assert 1.5 <= a <= 2.2          # measured marginal slope ~1.8
+    assert 1.5 <= a <= 2.2          # fitted slope a ~1.57 (the ~1.8 figure is the wall/rail RATIO, not a)
     assert b >= 0.0                 # NNLS non-negativity holds
     assert res < 0.15               # tight relative residual on real data
 
@@ -44,7 +44,7 @@ def test_confidence_band_combines_in_quadrature():
 
 def test_tier_is_plug_calibrated_only_when_band_beats_estimated_floor():
     assert cal.tier_label("smart_plug", 5.0).startswith("plug-calibrated")
-    assert "±5%" in cal.tier_label("smart_plug", 5.0)
+    assert "±5.0%" in cal.tier_label("smart_plug", 5.0)
     assert cal.tier_label("smart_plug", 22.0).startswith("uncertified")   # no tighter than estimated
     assert cal.tier_label("manual", 5.0).startswith("uncertified")        # only smart_plug certifies in C2
 

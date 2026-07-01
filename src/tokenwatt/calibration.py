@@ -56,8 +56,8 @@ def confidence_band_pct(residual_rel: float, run_var_rel: float, meter_accuracy_
 
 def tier_label(meter_tier: str, band_pct: float) -> str:
     if meter_tier == "smart_plug" and band_pct < _ESTIMATED_FLOOR_PCT:
-        return f"plug-calibrated (±{band_pct:.0f}%)"
-    return f"uncertified (±{band_pct:.0f}%) — no tighter than estimated"
+        return f"plug-calibrated (±{band_pct:.1f}%)"
+    return f"uncertified (±{band_pct:.1f}%) — no tighter than estimated"
 
 
 @dataclass(frozen=True)
