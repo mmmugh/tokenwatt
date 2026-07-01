@@ -33,7 +33,7 @@
 - **Modify `src/tokenwatt/cli.py`** — add `tokenwatt calibrate fit`. Modify `src/tokenwatt/metersource.py` — add best-effort `ShellyMeterSource.device_info()` for exact meter identity.
 - **Create `tests/test_nnls.py`, `tests/test_calibration.py`, `tests/test_machineid.py`, `tests/test_profiles.py`**; extend `tests/test_cli_smoke.py`, `tests/test_metersource.py`.
 
-**Deferred out of C2 (do not build here):** runtime `Cal` application + `calib_*` ledger columns + proxy boot loading + `calibration:` config block (C3); per-rail fit + condition-number/VIF gate (C5); the interactive `calibrate` wizard + `calibrate show` (C4); the WT310E `lab-calibrated` tier. The `held-out residual` + `condition number` profile fields the spec lists are **per-rail-gate concepts (C5)**; C2 stores in-sample `residual_rel` and omits condition number (scalar fit is always well-posed).
+**Deferred out of C2 (do not build here):** runtime `Cal` application + `calib_*` ledger columns + proxy boot loading + `calibration:` config block (C3); per-rail fit + condition-number/VIF gate (C5); the interactive `calibrate` wizard + `calibrate show` (C4); the WT310E `lab-calibrated` tier. The `held-out residual` + `condition number` profile fields the spec lists are **per-rail-gate concepts (C5)**; C2 stores in-sample `residual_rel` and omits condition number (deferred to C5's per-rail gate). The scalar fit is well-posed **as long as rail energy varies across cells** — true for the real battery (prefill ~13k J vs decode ~25k J) — but a degenerate campaign with near-constant rail energy could yield an ill-conditioned fit whose in-sample band still looks tight; C5's condition-number/VIF gate is the real guard, so C2 must NOT claim the guard is unnecessary.
 
 ---
 
@@ -250,7 +250,7 @@ def test_fit_scalar_recovers_slope_from_real_c1_data():
             (13637.3, 26578.2), (25751.2, 45346.7), (24891.2, 44511.0)]
     samples = [_sample("c", r, w) for r, w in real]
     a, b, res = cal.fit_scalar(samples)
-    assert 1.5 <= a <= 2.2          # measured marginal slope ~1.8
+    assert 1.5 <= a <= 2.2          # fitted slope ~1.57 (the ~1.8 figure is the wall/rail RATIO, not a)
     assert b >= 0.0                 # NNLS non-negativity holds
     assert res < 0.15               # tight relative residual on real data
 
@@ -269,7 +269,7 @@ def test_confidence_band_combines_in_quadrature():
 
 def test_tier_is_plug_calibrated_only_when_band_beats_estimated_floor():
     assert cal.tier_label("smart_plug", 5.0).startswith("plug-calibrated")
-    assert "±5%" in cal.tier_label("smart_plug", 5.0)
+    assert "±5.0%" in cal.tier_label("smart_plug", 5.0)
     assert cal.tier_label("smart_plug", 22.0).startswith("uncertified")   # no tighter than estimated
     assert cal.tier_label("manual", 5.0).startswith("uncertified")        # only smart_plug certifies in C2
 
@@ -344,8 +344,8 @@ def confidence_band_pct(residual_rel: float, run_var_rel: float, meter_accuracy_
 
 def tier_label(meter_tier: str, band_pct: float) -> str:
     if meter_tier == "smart_plug" and band_pct < _ESTIMATED_FLOOR_PCT:
-        return f"plug-calibrated (±{band_pct:.0f}%)"
-    return f"uncertified (±{band_pct:.0f}%) — no tighter than estimated"
+        return f"plug-calibrated (±{band_pct:.1f}%)"
+    return f"uncertified (±{band_pct:.1f}%) — no tighter than estimated"
 
 
 @dataclass(frozen=True)
@@ -844,7 +844,7 @@ git commit -m "feat(calib): tokenwatt calibrate fit (dataset -> per-machine prof
 Not CI — the real check that closes C2, using the C1 dataset already on disk.
 
 1. `tokenwatt calibrate fit ~/.tokenwatt/calibration/campaign-c1-full.json --meter-host <plug-ip>`
-2. Confirm: the printed slope `a ≈ 1.8` (matches the ~1.7–1.9 marginal wall/rail ratios), `b ≥ 0`, a small residual, repeatability ~1–3% (from the 2 passes), and a `plug-calibrated (±x%)` tier with a single-digit band.
+2. Confirm: the printed slope `a ≈ 1.57` with overhead `b ≈ 16.5 W` — the ~1.7–1.9 figures are the wall/rail *ratios*, which the fit reproduces as `a + b·Δt/E_rail` (prefill ~1.94, decode ~1.76), NOT the slope `a` itself. Also `b ≥ 0`, a small residual (~0.6%), repeatability ~1–3% (from the 2 passes), and a `plug-calibrated (±x%)` tier with a single-digit band (expect ~±2%).
 3. Confirm the profile landed at `~/.tokenwatt/profiles/mac15-14_apple-m3-ultra_96gb_macos26.json` and (with `--meter-host` reachable) carries the exact `S4PL-00116US`/gen-4 meter identity.
 4. This profile is what C3 will load at proxy boot to stamp ledger rows `plug-calibrated`.
 
@@ -858,7 +858,7 @@ Not CI — the real check that closes C2, using the C1 dataset already on disk.
 - `machine_id` = SoC + `hw.model` + RAM + macOS major, slugged, no sudo → Task 3.
 - JSON-per-machine registry with `save`/`load`/`active_for_current_machine`/`list`, graceful miss → `None` → Task 4.
 - Exact device identity (`model`/`gen`/`mac` from `Shelly.GetDeviceInfo`) recorded best-effort → Task 5 (the C1 dataset lacked it; enriched here when the plug is reachable, else the meter's `{name,tier,accuracy_pct}` from the dataset).
-- Real-data acceptance (recover a ≈ 1.8) → Task 2 fixture test + on-device step.
+- Real-data acceptance (recover the fitted slope a ≈ 1.57; the ~1.8 figure is the wall/rail ratio) → Task 2 fixture test + on-device step.
 - Deferred correctly: runtime `Cal`/ledger/config (C3), per-rail + condition-number/VIF gate + held-out residual (C5), wizard + `calibrate show` (C4), lab tier.
 
 **Placeholder scan:** none — every step ships runnable code + exact commands.
