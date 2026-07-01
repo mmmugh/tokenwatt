@@ -203,7 +203,8 @@ class CampaignResult:
 
 
 def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
-                 make_meter, make_source, host: str, switch_id: int = 0,
+                 make_meter=_default_meter, make_source=_default_shelly,
+                 host: str, switch_id: int = 0,
                  password: str | None = None, cell_seconds: float = 300.0, passes: int = 2,
                  timestamp: float, idle_seconds: float | None = None,
                  sleep=time.sleep, monotonic=time.monotonic) -> tuple["CampaignResult | None", str]:

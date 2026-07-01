@@ -55,3 +55,20 @@ def test_calibrate_campaign_requires_upstream_and_model():
     res = runner.invoke(app, ["calibrate", "campaign", "--meter-host", "h"])
     assert res.exit_code == 1
     assert "upstream" in res.output.lower() or "model" in res.output.lower()
+
+
+def test_calibrate_campaign_reaches_run_campaign_and_fails_loud_on_unreachable(monkeypatch):
+    # exercises the real CLI -> run_campaign(defaults) -> _default_shelly wiring;
+    # would have caught the missing-defaults TypeError. Fake source => no network.
+    from tokenwatt import metersource
+
+    class _Unreachable:
+        name, tier, accuracy_pct = "fake", "fake", 0.0
+        def __init__(self, *a, **k): pass
+        def reachable(self): return (False, "no route to host")
+
+    monkeypatch.setattr(metersource, "ShellyMeterSource", _Unreachable)
+    res = runner.invoke(app, ["calibrate", "campaign", "--meter-host", "h",
+                              "--upstream", "http://up", "--model", "m"])
+    assert res.exit_code == 1
+    assert "unreachable" in res.output.lower()
