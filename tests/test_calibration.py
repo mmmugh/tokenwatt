@@ -51,3 +51,21 @@ def test_tier_is_plug_calibrated_only_when_band_beats_estimated_floor():
 
 def test_cal_scalar_is_a_pure_linear_prediction():
     assert cal.cal_scalar(1.8, 0.5, e_rail_total_j=1000.0, dt_s=300.0) == pytest.approx(1950.0)
+
+
+def test_fit_composes_a_consistent_fitresult_from_a_campaign():
+    samples = [_sample("prefill", 1000.0, 2000.0), _sample("prefill", 1000.0, 2010.0),
+               _sample("decode", 5000.0, 9000.0), _sample("decode", 5000.0, 9100.0)]
+    campaign = {"samples": samples, "passes": 2,
+                "meter": {"name": "shelly-plug", "tier": "smart_plug", "accuracy_pct": 1.0}}
+    r = cal.fit(campaign)
+    # composition must match the standalone helpers on the same inputs (no key mixups)
+    a, b, res = cal.fit_scalar(samples)
+    rv = cal.run_variance_rel(samples)
+    band = cal.confidence_band_pct(res, rv, 1.0)
+    assert r.fit_type == "scalar"
+    assert (r.a, r.b, r.residual_rel) == (a, b, res)
+    assert r.run_variance_rel == rv
+    assert r.band_pct == band
+    assert r.tier == cal.tier_label("smart_plug", band)
+    assert r.n_samples == 4 and r.n_passes == 2
