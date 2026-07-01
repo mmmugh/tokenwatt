@@ -275,7 +275,7 @@ def test_tier_is_plug_calibrated_only_when_band_beats_estimated_floor():
 
 
 def test_cal_scalar_is_a_pure_linear_prediction():
-    assert cal.cal_scalar(1.8, 0.5, e_rail_total_j=1000.0, dt_s=300.0) == pytest.approx(1980.0)
+    assert cal.cal_scalar(1.8, 0.5, e_rail_total_j=1000.0, dt_s=300.0) == pytest.approx(1950.0)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
