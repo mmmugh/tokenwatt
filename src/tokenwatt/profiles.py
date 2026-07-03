@@ -3,17 +3,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 
 from tokenwatt.calibration import FitResult
 from tokenwatt.machineid import MachineInfo
 
-_PROFILE_SCHEMA = 1
+_PROFILE_SCHEMA = 2
 _DEFAULT_ROOT = "~/.tokenwatt/profiles"
 
 
 def _root(root: str | None) -> str:
     return os.path.expanduser(root if root is not None else _DEFAULT_ROOT)
+
+
+def _model_slug(model: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", model.lower()).strip("-")
 
 
 @dataclass(frozen=True)
@@ -49,22 +54,36 @@ def profile_from(fit: FitResult, machine: MachineInfo, meter: dict, *,
 def save(profile: Profile, *, root: str | None = None) -> str:
     d = _root(root)
     os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, f"{profile.machine_id}.json")
+    path = os.path.join(d, f"{profile.machine_id}__{_model_slug(profile.model_calibrated_on)}.json")
     with open(path, "w") as f:
         json.dump(asdict(profile), f, indent=2)
     return path
 
 
-def load(machine_id: str, *, root: str | None = None) -> Profile | None:
-    path = os.path.join(_root(root), f"{machine_id}.json")
-    if not os.path.isfile(path):
-        return None
+def _read(path: str) -> Profile:
     with open(path) as f:
-        return Profile(**json.load(f))
+        data = json.load(f)
+    sv = data.get("schema_version")
+    if sv not in (1, 2):
+        raise ValueError(f"unknown profile schema_version {sv!r} in {path}")
+    return Profile(**data)
 
 
-def active_for_current_machine(machine_id: str, *, root: str | None = None) -> Profile | None:
-    return load(machine_id, root=root)
+def load(machine_id: str, model: str, *, root: str | None = None) -> Profile | None:
+    d = _root(root)
+    keyed = os.path.join(d, f"{machine_id}__{_model_slug(model)}.json")
+    if os.path.isfile(keyed):
+        return _read(keyed)
+    legacy = os.path.join(d, f"{machine_id}.json")           # pre-schema-2 single-model file
+    if os.path.isfile(legacy):
+        p = _read(legacy)
+        if p.model_calibrated_on == model:
+            return p
+    return None
+
+
+def active_for(machine_id: str, model: str, *, root: str | None = None) -> Profile | None:
+    return load(machine_id, model, root=root)
 
 
 def list_profiles(*, root: str | None = None) -> list[Profile]:

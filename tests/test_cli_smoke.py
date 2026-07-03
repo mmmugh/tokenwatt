@@ -113,7 +113,7 @@ def test_calibrate_fit_writes_a_profile_from_a_campaign(tmp_path, monkeypatch):
     res = runner.invoke(app, ["calibrate", "fit", str(cpath), "--out", str(tmp_path / "profiles")])
     assert res.exit_code == 0, res.output
     assert "plug-calibrated" in res.output
-    prof = _json.load(open(tmp_path / "profiles" / "testmac_apple-test_16gb_macos99.json"))
+    prof = _json.load(open(tmp_path / "profiles" / "testmac_apple-test_16gb_macos99__qwen3-6-27b.json"))
     assert prof["fit_type"] == "scalar"
     assert 1.8 <= prof["coefficients"]["a"] <= 2.2      # slope recovered
     assert prof["model_calibrated_on"] == "qwen3.6-27b"

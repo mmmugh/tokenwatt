@@ -1,7 +1,9 @@
 # tests/test_profiles.py
+import json
 import os
+import pytest
 
-from tokenwatt.profiles import Profile, profile_from, save, load, list_profiles
+from tokenwatt.profiles import Profile, profile_from, save, load, active_for, list_profiles
 from tokenwatt.calibration import FitResult
 from tokenwatt.machineid import MachineInfo
 
@@ -17,6 +19,12 @@ def _machine():
                        "Apple M3 Ultra", "Mac15,14", 96, "26")
 
 
+def _profile(model):
+    return profile_from(_fit(), _machine(),
+                        meter={"name": "shelly-plug", "tier": "smart_plug", "accuracy_pct": 1.0},
+                        model_calibrated_on=model, created_at=1_700_000_000.0)
+
+
 def test_profile_from_carries_fit_machine_and_meter():
     p = profile_from(_fit(), _machine(),
                      meter={"name": "shelly-plug", "tier": "smart_plug", "accuracy_pct": 1.0},
@@ -28,16 +36,46 @@ def test_profile_from_carries_fit_machine_and_meter():
     assert p.model_calibrated_on == "qwen3.6-27b"
 
 
-def test_save_then_load_round_trips(tmp_path):
-    p = profile_from(_fit(), _machine(),
-                     meter={"name": "shelly-plug", "tier": "smart_plug", "accuracy_pct": 1.0},
-                     model_calibrated_on="qwen3.6-27b", created_at=1_700_000_000.0)
-    path = save(p, root=str(tmp_path))
-    assert os.path.isfile(path) and path.endswith("mac15-14_apple-m3-ultra_96gb_macos26.json")
-    got = load(p.machine_id, root=str(tmp_path))
-    assert got == p                                   # frozen dataclass equality
-    assert [x.machine_id for x in list_profiles(root=str(tmp_path))] == [p.machine_id]
+def test_save_keys_by_machine_and_model(tmp_path):
+    path = save(_profile("qwen3.6-27b"), root=str(tmp_path))
+    assert path.endswith("mac15-14_apple-m3-ultra_96gb_macos26__qwen3-6-27b.json")
+    got = load("mac15-14_apple-m3-ultra_96gb_macos26", "qwen3.6-27b", root=str(tmp_path))
+    assert got == _profile("qwen3.6-27b")
 
 
-def test_load_missing_machine_returns_none(tmp_path):
-    assert load("no-such-machine", root=str(tmp_path)) is None
+def test_two_models_on_one_machine_coexist(tmp_path):
+    save(_profile("qwen3.6-27b"), root=str(tmp_path))
+    save(_profile("gemma-4-e4b"), root=str(tmp_path))
+    assert load("mac15-14_apple-m3-ultra_96gb_macos26", "qwen3.6-27b", root=str(tmp_path)) is not None
+    assert load("mac15-14_apple-m3-ultra_96gb_macos26", "gemma-4-e4b", root=str(tmp_path)) is not None
+    assert len(list_profiles(root=str(tmp_path))) == 2
+
+
+def test_load_missing_model_returns_none(tmp_path):
+    save(_profile("qwen3.6-27b"), root=str(tmp_path))
+    assert load("mac15-14_apple-m3-ultra_96gb_macos26", "other-model", root=str(tmp_path)) is None
+    assert load("no-such-machine", "qwen3.6-27b", root=str(tmp_path)) is None
+
+
+def test_legacy_schema1_file_loads_only_for_its_model(tmp_path):
+    # a pre-existing <machine>.json (schema 1) still resolves for its own model
+    legacy = _profile("qwen3.6-27b")
+    from dataclasses import asdict
+    d = asdict(legacy); d["schema_version"] = 1
+    open(os.path.join(tmp_path, f"{legacy.machine_id}.json"), "w").write(json.dumps(d))
+    assert load(legacy.machine_id, "qwen3.6-27b", root=str(tmp_path)) is not None
+    assert load(legacy.machine_id, "different-model", root=str(tmp_path)) is None   # not a blind match
+
+
+def test_load_raises_on_unknown_schema(tmp_path):
+    p = save(_profile("qwen3.6-27b"), root=str(tmp_path))
+    d = json.load(open(p)); d["schema_version"] = 99
+    open(p, "w").write(json.dumps(d))
+    with pytest.raises(ValueError, match="schema"):
+        load("mac15-14_apple-m3-ultra_96gb_macos26", "qwen3.6-27b", root=str(tmp_path))
+
+
+def test_active_for_is_exact_model_match(tmp_path):
+    save(_profile("qwen3.6-27b"), root=str(tmp_path))
+    assert active_for("mac15-14_apple-m3-ultra_96gb_macos26", "qwen3.6-27b", root=str(tmp_path)) is not None
+    assert active_for("mac15-14_apple-m3-ultra_96gb_macos26", "gpt-oss-120b", root=str(tmp_path)) is None
