@@ -6,6 +6,7 @@ import pytest
 from tokenwatt.meter import FakeMeter, EnergyByRail
 from tokenwatt.metersource import FakeMeterSource
 from tokenwatt.battery import ChatResult, FakeLoadClient, LoadCell
+from tokenwatt.powersource import BatteryFlux, FakeBatterySource
 from tokenwatt import campaign
 
 
@@ -29,6 +30,16 @@ def test_measure_idle_returns_per_rail_and_wall_watts():
     assert idle.dt_s == pytest.approx(10.0)
     assert idle.rail_w == {"cpu_total": pytest.approx(1.0)}      # 10 J / 10 s
     assert idle.wall_w == pytest.approx(0.05 * 3600 / 10.0)      # 18 W
+
+
+def test_measure_idle_records_battery_abs_w():
+    clk = _Clock()
+    meter = FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0}))
+    source = FakeMeterSource([100.0, 100.05])
+    idle = campaign.measure_idle(meter, source, seconds=10.0,
+                                 battery=FakeBatterySource([BatteryFlux(9.0, True)]),
+                                 sleep=clk.sleep, monotonic=clk.monotonic)
+    assert idle.battery_abs_w == pytest.approx(9.0)
 
 
 def test_run_cell_brackets_load_and_subtracts_idle_from_both_sides():
@@ -86,6 +97,43 @@ def test_run_cell_clamps_negative_marginals_to_zero():
     assert s.e_wall_marginal_j == 0.0
 
 
+def test_run_cell_records_max_battery_abs_w():
+    clk = _Clock()
+    meter = FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0}))
+    source = FakeMeterSource([100.0, 100.1])
+    idle = campaign.IdleRates(rail_w={"cpu_total": 0.0}, wall_w=0.0, dt_s=1.0)
+    battery = FakeBatterySource([BatteryFlux(3.0, True), BatteryFlux(21.0, True)])  # peak 21 W
+    def load_fn():
+        clk.sleep(6.0)                                   # each call crosses a 5 s battery poll
+        return ChatResult(tok_in=1, tok_out=1)
+    s = campaign.run_cell(meter, source, load_fn, idle, cell="prefill", model="m",
+                          seconds=12.0, battery=battery, sleep=clk.sleep, monotonic=clk.monotonic)
+    assert s.battery_abs_w == pytest.approx(21.0)         # the worst contamination in the cell
+
+
+def test_run_cell_battery_none_when_no_source_or_desktop():
+    clk = _Clock()
+    meter = FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0}))
+    source = FakeMeterSource([1.0, 1.0])
+    idle = campaign.IdleRates(rail_w={"cpu_total": 0.0}, wall_w=0.0, dt_s=1.0)
+    def load_fn():
+        clk.sleep(2.0)
+        return ChatResult(tok_in=1, tok_out=1)
+    # no source at all
+    s1 = campaign.run_cell(meter, source, load_fn, idle, cell="c", model="m",
+                           seconds=2.0, sleep=clk.sleep, monotonic=clk.monotonic)
+    assert s1.battery_abs_w is None
+    # desktop: source present but always yields None
+    clk2 = _Clock()
+    def load_fn2():
+        clk2.sleep(2.0)
+        return ChatResult(tok_in=1, tok_out=1)
+    s2 = campaign.run_cell(meter, FakeMeterSource([1.0, 1.0]), load_fn2, idle, cell="c",
+                           model="m", seconds=2.0, battery=FakeBatterySource([None]),
+                           sleep=clk2.sleep, monotonic=clk2.monotonic)
+    assert s2.battery_abs_w is None
+
+
 def test_run_cell_zero_seconds_records_unknown_tokens_not_zero():
     # a zero/negative `seconds` window runs no requests at all -> requests == 0.
     # any_unknown never flips True in that case, so without the fix tok_in/tok_out
@@ -121,6 +169,7 @@ def test_run_campaign_collects_one_sample_per_cell_per_pass():
         load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
         make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
         make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        make_battery=lambda: FakeBatterySource([None]),
         host="h", cell_seconds=4.0, passes=2, timestamp=1_700_000_000.0,
         sleep=clk.sleep, monotonic=clk.monotonic)
     assert result is not None
@@ -129,6 +178,21 @@ def test_run_campaign_collects_one_sample_per_cell_per_pass():
     assert result.model == "m1" and result.passes == 2 and result.cell_seconds == 4.0
     assert result.meter_tier == "fake"                    # from the FakeMeterSource
     assert all(s.tok_in > 0 for s in result.samples)      # load actually ran
+
+
+def test_run_campaign_threads_battery_into_samples():
+    clk = _Clock()
+    result, _ = campaign.run_campaign(
+        cells=_cells(), model="m1",
+        load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
+        make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
+        make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        make_battery=lambda: FakeBatterySource([BatteryFlux(4.0, True)]),
+        host="h", cell_seconds=4.0, passes=1, timestamp=0.0,
+        sleep=clk.sleep, monotonic=clk.monotonic)
+    assert result is not None
+    assert all(s.battery_abs_w == pytest.approx(4.0) for s in result.samples)
+    assert result.idle.battery_abs_w == pytest.approx(4.0)
 
 
 def test_run_campaign_aborts_loud_when_meter_source_unreachable():
@@ -160,6 +224,7 @@ def test_run_campaign_read_failure_names_the_phase():
         cells=_cells(), model="m", load=_RaisingLoad(),
         make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
         make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        make_battery=lambda: FakeBatterySource([None]),
         host="h", cell_seconds=4.0, passes=1, timestamp=0.0,
         sleep=clk.sleep, monotonic=clk.monotonic)
     assert result is None
@@ -175,6 +240,7 @@ def test_run_campaign_emits_progress_per_phase():
         load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
         make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
         make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        make_battery=lambda: FakeBatterySource([None]),
         host="h", cell_seconds=4.0, passes=1, timestamp=0.0,
         on_progress=events.append,
         sleep=clk.sleep, monotonic=clk.monotonic)
@@ -192,6 +258,7 @@ def test_write_campaign_round_trips_json(tmp_path):
         load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
         make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
         make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        make_battery=lambda: FakeBatterySource([None]),
         host="h", cell_seconds=4.0, passes=1, timestamp=1_700_000_000.0,
         sleep=clk.sleep, monotonic=clk.monotonic)
     out = os.path.join(tmp_path, "sub", "campaign.json")

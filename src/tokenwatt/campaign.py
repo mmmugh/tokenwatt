@@ -77,6 +77,11 @@ def _default_shelly(host: str, switch_id: int, password: str | None):
     return ShellyMeterSource(host, switch_id=switch_id, password=password)
 
 
+def _default_battery():
+    from tokenwatt.powersource import IOKitBatterySource
+    return IOKitBatterySource()
+
+
 def run_probe(*, host: str, switch_id: int = 0, password: str | None = None,
               seconds: float = 30.0, poll_s: float = 0.5,
               make_meter=_default_meter, make_source=_default_shelly,
@@ -123,6 +128,7 @@ class IdleRates:
     rail_w: dict[str, float]     # per-rail idle power (W)
     wall_w: float                # idle wall power (W)
     dt_s: float
+    battery_abs_w: float | None = None   # max |battery power| during idle; None if no battery
 
 
 @dataclass
@@ -135,35 +141,51 @@ class CellSample:
     tok_in: int | None                    # None if any request in the cell lacked usage
     tok_out: int | None
     requests: int                         # count of load calls — proof sustained load ran
+    battery_abs_w: float | None = None    # max |battery power| during the cell; None if no battery
+
+
+def _batt_peak(cur: float | None, battery) -> float | None:
+    """Read the battery source (if any) and fold its magnitude into the running max.
+    Returns `cur` unchanged when there is no source or no battery (desktop)."""
+    if battery is None:
+        return cur
+    f = battery.read_flux()
+    if f is None:
+        return cur
+    return f.abs_w if cur is None else max(cur, f.abs_w)
 
 
 def measure_idle(meter: EnergyMeter, source: MeterSource, *, seconds: float = 300.0,
-                 sleep=time.sleep, monotonic=time.monotonic) -> IdleRates:
-    """Bracket an idle window (no inference) → per-rail idle watts + idle wall watts.
-    Defines the marginal baseline subtracted from every load cell."""
+                 battery=None, sleep=time.sleep, monotonic=time.monotonic) -> IdleRates:
+    """Bracket an idle window (no inference) → per-rail idle watts + idle wall watts,
+    plus the peak battery activity seen (to gate the baseline on laptops)."""
     t0 = monotonic()
     e0 = meter.cumulative()
     w0 = source.read_accumulated_wh()
+    batt_max = _batt_peak(None, battery)
     sleep(seconds)
     dt = max(monotonic() - t0, 1e-9)
     e_rail = meter.cumulative() - e0
     wall_j = max(source.read_accumulated_wh() - w0, 0.0) * 3600.0
+    batt_max = _batt_peak(batt_max, battery)
     return IdleRates(rail_w={r: j / dt for r, j in e_rail.joules.items()},
-                     wall_w=wall_j / dt, dt_s=dt)
+                     wall_w=wall_j / dt, dt_s=dt, battery_abs_w=batt_max)
 
 
 def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], ChatResult],
              idle: IdleRates, *, cell: str, model: str, seconds: float = 300.0,
+             battery=None, battery_poll_s: float = 5.0,
              sleep=time.sleep, monotonic=time.monotonic) -> CellSample:
-    """Drive `load_fn` in a loop for `seconds` while bracketing rail+wall energy,
-    then return the idle-subtracted marginal sample. `load_fn` is expected to
-    consume wall-clock time (a real HTTP request does; the fake advances the clock)."""
+    """Drive `load_fn` in a loop for `seconds` while bracketing rail+wall energy and
+    sampling battery activity ~every `battery_poll_s`; return the idle-subtracted sample."""
     t0 = monotonic()
     e0 = meter.cumulative()
     w0 = source.read_accumulated_wh()
     tok_in = tok_out = 0
     requests = 0
     any_unknown = False
+    batt_max = None
+    next_batt = t0
     while monotonic() - t0 < seconds:
         r = load_fn()
         requests += 1
@@ -172,6 +194,9 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
         else:
             tok_in += r.tok_in
             tok_out += r.tok_out
+        if battery is not None and monotonic() >= next_batt:
+            batt_max = _batt_peak(batt_max, battery)
+            next_batt = monotonic() + battery_poll_s
     dt = max(monotonic() - t0, 1e-9)
     e_rail = meter.cumulative() - e0
     wall_j = max(source.read_accumulated_wh() - w0, 0.0) * 3600.0
@@ -182,7 +207,8 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
     return CellSample(cell=cell, model=model, dt_s=dt, e_rail_marginal_j=marg_rail,
                       e_wall_marginal_j=marg_wall,
                       tok_in=None if (any_unknown or requests == 0) else tok_in,
-                      tok_out=None if (any_unknown or requests == 0) else tok_out, requests=requests)
+                      tok_out=None if (any_unknown or requests == 0) else tok_out,
+                      requests=requests, battery_abs_w=batt_max)
 
 
 _CAMPAIGN_SCHEMA = 1
@@ -204,6 +230,7 @@ class CampaignResult:
 
 def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
                  make_meter=_default_meter, make_source=_default_shelly,
+                 make_battery=_default_battery,
                  host: str, switch_id: int = 0,
                  password: str | None = None, cell_seconds: float = 300.0, passes: int = 2,
                  timestamp: float, idle_seconds: float | None = None,
@@ -220,11 +247,12 @@ def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
     except Exception as e:
         return None, (f"energy meter unavailable ({type(e).__name__}: {e}); "
                       f"run this on the Apple-Silicon Mac being calibrated")
+    battery = make_battery()
     phase = "idle baseline"
     try:
         on_progress(f"measuring {phase} ({idle_seconds or cell_seconds:.0f}s)…")
         idle = measure_idle(meter, source, seconds=idle_seconds or cell_seconds,
-                            sleep=sleep, monotonic=monotonic)
+                            battery=battery, sleep=sleep, monotonic=monotonic)
         samples: list[CellSample] = []
         for p in range(passes):
             for cell in cells:
@@ -233,7 +261,7 @@ def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
                 samples.append(run_cell(
                     meter, source, lambda c=cell: load.chat(model, c.prompt, c.max_tokens),
                     idle, cell=cell.name, model=model, seconds=cell_seconds,
-                    sleep=sleep, monotonic=monotonic))
+                    battery=battery, sleep=sleep, monotonic=monotonic))
     except Exception as e:
         return None, f"campaign read failed during {phase} ({type(e).__name__}: {e})"
     result = CampaignResult(
