@@ -79,3 +79,12 @@ def test_active_for_is_exact_model_match(tmp_path):
     save(_profile("qwen3.6-27b"), root=str(tmp_path))
     assert active_for("mac15-14_apple-m3-ultra_96gb_macos26", "qwen3.6-27b", root=str(tmp_path)) is not None
     assert active_for("mac15-14_apple-m3-ultra_96gb_macos26", "gpt-oss-120b", root=str(tmp_path)) is None
+
+
+def test_keyed_load_rejects_slug_collision_wrong_model(tmp_path):
+    # "qwen3-5-4b" and "qwen3.5-4b" both slug to "qwen3-5-4b", so they share one keyed file.
+    # A stored profile calibrated on "qwen3-5-4b" must NOT be handed back for a request for
+    # "qwen3.5-4b" just because the filename matches -- that would silently return a
+    # wrong-model plug-calibrated band, which the honesty contract forbids.
+    save(_profile("qwen3-5-4b"), root=str(tmp_path))
+    assert load("mac15-14_apple-m3-ultra_96gb_macos26", "qwen3.5-4b", root=str(tmp_path)) is None

@@ -73,7 +73,9 @@ def load(machine_id: str, model: str, *, root: str | None = None) -> Profile | N
     d = _root(root)
     keyed = os.path.join(d, f"{machine_id}__{_model_slug(model)}.json")
     if os.path.isfile(keyed):
-        return _read(keyed)
+        p = _read(keyed)
+        if p.model_calibrated_on == model:
+            return p
     legacy = os.path.join(d, f"{machine_id}.json")           # pre-schema-2 single-model file
     if os.path.isfile(legacy):
         p = _read(legacy)

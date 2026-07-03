@@ -270,4 +270,6 @@ def test_write_campaign_round_trips_json(tmp_path):
     assert doc["samples"][0]["cell"] == "prefill"
     assert "e_wall_marginal_j" in doc["samples"][0]
     assert "requests" in doc["samples"][0]        # efficacy signal persisted for C2
+    assert "battery_abs_w" in doc["samples"][0]
     assert "wall_w" in doc["idle"]
+    assert "battery_abs_w" in doc["idle"]
