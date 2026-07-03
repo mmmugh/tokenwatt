@@ -216,6 +216,9 @@ def calibrate_fit(
     except RuntimeError as e:                     # nnls non-convergence — fail loud, not a traceback
         typer.echo(f"calibration did not converge: {e}", err=True)
         raise typer.Exit(1)
+    except ValueError as e:                       # battery-contaminated idle / no clean samples
+        typer.echo(f"cannot fit: {e}", err=True)
+        raise typer.Exit(1)
     machine = detect_machine()
     meter = dict(camp["meter"])
     if meter_host:                       # best-effort exact device identity
@@ -236,6 +239,8 @@ def calibrate_fit(
     typer.echo(f"fit (scalar): wall_J ≈ {result.a:.3f}·rail_J + {result.b:.3f}·Δt   "
                f"residual {result.residual_rel*100:.1f}%   repeatability {result.run_variance_rel*100:.1f}%")
     typer.echo(f"tier: {result.tier}")
+    if result.n_excluded:
+        typer.echo(f"note: excluded {result.n_excluded} battery-contaminated cell(s) from the fit")
     typer.echo(f"wrote {saved}")
 
 

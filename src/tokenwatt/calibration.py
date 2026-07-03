@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from tokenwatt.nnls import nnls
 
 _ESTIMATED_FLOOR_PCT = 15.0   # a plug fit no tighter than this isn't worth a distinct tier
+GATE_W = 0.5     # a laptop cell is trusted only if |battery power| stayed below this (calibration only)
 
 
 def cal_scalar(a: float, b: float, e_rail_total_j: float, dt_s: float) -> float:
@@ -71,10 +72,27 @@ class FitResult:
     tier: str
     n_samples: int
     n_passes: int
+    n_excluded: int = 0
+
+
+def _contaminated(sample: dict) -> bool:
+    b = sample.get("battery_abs_w")
+    return b is not None and b >= GATE_W
 
 
 def fit(campaign: dict) -> FitResult:
-    samples = campaign["samples"]
+    idle_batt = (campaign.get("idle") or {}).get("battery_abs_w")
+    if idle_batt is not None and idle_batt >= GATE_W:
+        raise ValueError(
+            f"idle baseline battery-contaminated ({idle_batt:.2f} W ≥ {GATE_W} W): the marginal "
+            f"subtraction is unreliable — charge to 100% / cap charging and re-run")
+    all_samples = campaign["samples"]
+    samples = [s for s in all_samples if not _contaminated(s)]
+    n_excluded = len(all_samples) - len(samples)
+    if not samples:
+        raise ValueError(
+            "no clean samples to fit: every cell was battery-contaminated — "
+            "charge to 100% / cap charging and re-run")
     a, b, residual_rel = fit_scalar(samples)
     rv = run_variance_rel(samples)
     acc = campaign["meter"]["accuracy_pct"]
@@ -82,4 +100,4 @@ def fit(campaign: dict) -> FitResult:
     return FitResult(
         fit_type="scalar", a=a, b=b, residual_rel=residual_rel, run_variance_rel=rv,
         band_pct=band, tier=tier_label(campaign["meter"]["tier"], band),
-        n_samples=len(samples), n_passes=campaign.get("passes", 1))
+        n_samples=len(samples), n_passes=campaign.get("passes", 1), n_excluded=n_excluded)

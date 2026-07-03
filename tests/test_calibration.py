@@ -69,3 +69,42 @@ def test_fit_composes_a_consistent_fitresult_from_a_campaign():
     assert r.band_pct == band
     assert r.tier == cal.tier_label("smart_plug", band)
     assert r.n_samples == 4 and r.n_passes == 2
+
+
+def _campaign(samples, idle_batt=None):
+    return {
+        "meter": {"tier": "smart_plug", "accuracy_pct": 1.0},
+        "passes": 2,
+        "idle": {"rail_w": {}, "wall_w": 0.0, "dt_s": 1.0, "battery_abs_w": idle_batt},
+        "samples": samples,
+    }
+
+
+def _s(wall, rail, dt, cell="prefill", batt=None):
+    return {"cell": cell, "dt_s": dt, "e_rail_marginal_j": {"gpu": rail},
+            "e_wall_marginal_j": wall, "battery_abs_w": batt}
+
+
+def test_fit_excludes_battery_contaminated_cells():
+    clean = [_s(200.0, 100.0, 100.0, batt=0.1), _s(400.0, 200.0, 200.0, cell="decode", batt=0.2)]
+    dirty = [_s(9999.0, 100.0, 100.0, cell="prefill", batt=25.0)]      # charging mid-cell
+    r = cal.fit(_campaign(clean + dirty))
+    assert r.n_excluded == 1
+    assert r.n_samples == 2                                            # only the clean cells fit
+
+
+def test_fit_keeps_cells_with_no_battery_signal():
+    # desktop / no-battery: battery_abs_w is None -> never excluded
+    r = cal.fit(_campaign([_s(200.0, 100.0, 100.0, batt=None),
+                           _s(400.0, 200.0, 200.0, cell="decode", batt=None)]))
+    assert r.n_excluded == 0 and r.n_samples == 2
+
+
+def test_fit_fails_loud_on_contaminated_idle_baseline():
+    with pytest.raises(ValueError, match="idle baseline"):
+        cal.fit(_campaign([_s(200.0, 100.0, 100.0, batt=0.1)], idle_batt=12.0))
+
+
+def test_fit_fails_loud_when_no_clean_samples():
+    with pytest.raises(ValueError, match="no clean"):
+        cal.fit(_campaign([_s(9.0, 1.0, 1.0, batt=25.0)]))
