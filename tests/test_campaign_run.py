@@ -180,6 +180,40 @@ def test_run_campaign_collects_one_sample_per_cell_per_pass():
     assert all(s.tok_in > 0 for s in result.samples)      # load actually ran
 
 
+def test_run_campaign_idle_seconds_sizes_idle_window_independently():
+    # WHY: on laptops the plug's coarse 0.119 Wh quantum wrecks a short idle
+    # baseline. --idle-seconds must let the idle window be sized independently of
+    # (and longer than) the per-cell duration; without it, idle == cell_seconds.
+    clk = _Clock()
+    result, _ = campaign.run_campaign(
+        cells=_cells(), model="m1",
+        load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
+        make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
+        make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        make_battery=lambda: FakeBatterySource([None]),
+        host="h", cell_seconds=4.0, idle_seconds=20.0, passes=1, timestamp=0.0,
+        sleep=clk.sleep, monotonic=clk.monotonic)
+    assert result is not None
+    assert result.idle.dt_s == pytest.approx(20.0)              # idle used idle_seconds…
+    assert all(s.dt_s == pytest.approx(4.0) for s in result.samples)  # …cells used cell_seconds
+
+
+def test_run_campaign_idle_seconds_defaults_to_cell_seconds():
+    # WHY: omitting --idle-seconds must preserve the prior behavior exactly
+    # (idle window == cell_seconds), so desktop/Ultra campaigns are byte-unchanged.
+    clk = _Clock()
+    result, _ = campaign.run_campaign(
+        cells=_cells(), model="m1",
+        load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
+        make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
+        make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        make_battery=lambda: FakeBatterySource([None]),
+        host="h", cell_seconds=7.0, passes=1, timestamp=0.0,
+        sleep=clk.sleep, monotonic=clk.monotonic)
+    assert result is not None
+    assert result.idle.dt_s == pytest.approx(7.0)               # defaulted to cell_seconds
+
+
 def test_run_campaign_threads_battery_into_samples():
     clk = _Clock()
     result, _ = campaign.run_campaign(

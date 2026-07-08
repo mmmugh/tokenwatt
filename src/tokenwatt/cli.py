@@ -140,6 +140,7 @@ def calibrate_campaign(
     upstream: Optional[str] = typer.Option(None, "--upstream", help="inference server base URL (http://host:port)"),
     model: Optional[str] = typer.Option(None, "--model", help="model id to send in requests"),
     cell_seconds: float = typer.Option(300.0, "--cell-seconds", help="sustained-load seconds per cell (keep >> plug cadence)"),
+    idle_seconds: Optional[float] = typer.Option(None, "--idle-seconds", help="idle-baseline window (s); defaults to --cell-seconds. Set long on laptops so the plug's coarse Wh quantum doesn't dominate the tiny idle baseline."),
     passes: int = typer.Option(2, "--passes", help="battery repeats (repeatability)"),
     out: Optional[str] = typer.Option(None, "--out", help="where to write the samples JSON"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="read meter host from this config"),
@@ -173,8 +174,8 @@ def calibrate_campaign(
     try:
         result, msg = campaign.run_campaign(
             cells=text_cells(), model=model, load=load, host=host, switch_id=sid,
-            password=password, cell_seconds=cell_seconds, passes=passes, timestamp=ts,
-            on_progress=typer.echo)
+            password=password, cell_seconds=cell_seconds, idle_seconds=idle_seconds,
+            passes=passes, timestamp=ts, on_progress=typer.echo)
     finally:
         load.close()
     typer.echo(msg, err=(result is None))
