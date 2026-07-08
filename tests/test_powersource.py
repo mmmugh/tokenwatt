@@ -29,6 +29,24 @@ def test_parse_returns_none_on_missing_fields():
     assert _parse("nothing useful here") is None
 
 
+# Real battery ioreg (captured from an M3 MacBook Air) packs fields comma-separated with
+# NO spaces and inlines a big LifetimeData dict right after Voltage. A desktop stub / clean
+# fixtures hid this; the value regex must stop at the comma, not run to the next whitespace.
+_REAL_BATTERY = (
+    '  "Amperage" = 0\n'
+    '  "ExternalConnected" = Yes\n'
+    '  "Voltage" = 12590,"LifetimeData"={"Raw"=<02f1f13c00005eb3>,"UpdateTime"=1783483379}\n'
+    '  "InstantAmperage" = 1000,"PostChargeWaitSeconds"=120\n'
+    '  "IsCharging" = Yes\n'
+)
+
+
+def test_parse_handles_real_comma_packed_ioreg_fields():
+    # regression: value must parse as just the number, not "12590,\"LifetimeData\"=..."
+    f = _parse(_REAL_BATTERY)
+    assert f == BatteryFlux(abs_w=pytest.approx(1.0 * 12.59), charging=True)  # 1.0 A * 12.59 V
+
+
 def test_iokit_source_parses_injected_ioreg_output():
     def fake_run(args, text=True):
         assert args == ["ioreg", "-rn", "AppleSmartBattery"]

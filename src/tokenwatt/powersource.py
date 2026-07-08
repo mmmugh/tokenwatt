@@ -24,7 +24,10 @@ def _parse(text: str) -> BatteryFlux | None:
     """Parse `ioreg -rn AppleSmartBattery` text. None when there is no real battery
     (Voltage == 0 or the field is absent) — the desktop / no-battery case."""
     def field(name: str) -> str | None:
-        m = re.search(rf'"{name}"\s*=\s*(\S+)', text)
+        # real-battery ioreg packs fields comma-separated with no spaces
+        # ("Voltage" = 12590,"LifetimeData"=...) so stop the value at a comma/brace,
+        # not just whitespace — otherwise int() sees the whole rest of the line.
+        m = re.search(rf'"{name}"\s*=\s*([^,\s}}]+)', text)
         return m.group(1) if m else None
     v, a = field("Voltage"), field("InstantAmperage")
     if v is None or a is None:
