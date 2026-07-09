@@ -101,3 +101,38 @@ def fit(campaign: dict) -> FitResult:
         fit_type="scalar", a=a, b=b, residual_rel=residual_rel, run_variance_rel=rv,
         band_pct=band, tier=tier_label(campaign["meter"]["tier"], band),
         n_samples=len(samples), n_passes=campaign.get("passes", 1), n_excluded=n_excluded)
+
+
+def fit_combined(campaigns: list[dict]) -> FitResult:
+    """Fit E_wall_marg ≈ a·E_rail + b·Δt across MULTIPLE single-duration campaigns.
+    Varying Δt across campaigns is what pins the per-time term `b`. `a`,`b` and the
+    fit residual come from the pooled samples; pass-to-pass repeatability is measured
+    WITHIN each campaign (one duration) and RMS-combined — never across durations.
+
+    Use this instead of `fit()` on a hand-merged campaign: `fit()` groups repeatability
+    by cell NAME, so a merged 'prefill' spanning 120s→720s makes (max−min)/mean explode
+    and the band balloons (e.g. ±150%) even when each duration is tightly repeatable."""
+    if not campaigns:
+        raise ValueError("fit_combined needs at least one campaign")
+    for c in campaigns:
+        idle_batt = (c.get("idle") or {}).get("battery_abs_w")
+        if idle_batt is not None and idle_batt >= GATE_W:
+            raise ValueError(
+                f"idle baseline battery-contaminated ({idle_batt:.2f} W ≥ {GATE_W} W): the marginal "
+                f"subtraction is unreliable — charge to 100% / cap charging and re-run")
+    clean_by_campaign = [[s for s in c["samples"] if not _contaminated(s)] for c in campaigns]
+    pooled = [s for cs in clean_by_campaign for s in cs]
+    n_excluded = sum(len(c["samples"]) for c in campaigns) - len(pooled)
+    if not pooled:
+        raise ValueError(
+            "no clean samples to fit: every cell was battery-contaminated — "
+            "charge to 100% / cap charging and re-run")
+    a, b, residual_rel = fit_scalar(pooled)
+    per_campaign_rv = [run_variance_rel(cs) for cs in clean_by_campaign if cs]
+    rv = math.sqrt(sum(x * x for x in per_campaign_rv) / len(per_campaign_rv)) if per_campaign_rv else 0.0
+    acc = campaigns[0]["meter"]["accuracy_pct"]
+    band = confidence_band_pct(residual_rel, rv, acc)
+    return FitResult(
+        fit_type="scalar-combined", a=a, b=b, residual_rel=residual_rel, run_variance_rel=rv,
+        band_pct=band, tier=tier_label(campaigns[0]["meter"]["tier"], band),
+        n_samples=len(pooled), n_passes=campaigns[0].get("passes", 1), n_excluded=n_excluded)

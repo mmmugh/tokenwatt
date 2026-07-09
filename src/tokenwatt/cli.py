@@ -1,7 +1,7 @@
 import asyncio
 import time
 from importlib.resources import files
-from typing import Optional
+from typing import List, Optional
 
 import typer
 import httpx
@@ -193,27 +193,32 @@ def calibrate_campaign(
 
 @calibrate_app.command("fit")
 def calibrate_fit(
-    campaign: str = typer.Argument(..., help="path to a `calibrate campaign` samples JSON"),
+    campaigns: List[str] = typer.Argument(..., help="one or more `calibrate campaign` JSONs; pass several (different --cell-seconds) for a varying-duration fit that pins b"),
     out: Optional[str] = typer.Option(None, "--out", help="profiles dir (default ~/.tokenwatt/profiles)"),
     meter_host: Optional[str] = typer.Option(None, "--meter-host", help="enrich exact device identity via Shelly.GetDeviceInfo (best-effort)"),
 ):
     """Fit a campaign dataset into this machine's calibration profile (scalar).
-    The confidence band is MEASURED (fit residual ⊕ pass repeatability ⊕ meter accuracy)."""
+    The confidence band is MEASURED (fit residual ⊕ pass repeatability ⊕ meter accuracy).
+    Pass multiple campaign files (varying --cell-seconds) for a combined fit — b is
+    identified from the Δt spread, and repeatability is scoped within each duration."""
     import json
     import os
     import time as _time
     from tokenwatt import calibration, profiles
     from tokenwatt.machineid import detect_machine
 
-    path = os.path.expanduser(campaign)
-    if not os.path.isfile(path):
-        typer.echo(f"campaign file not found: {campaign}", err=True)
-        raise typer.Exit(1)
-    with open(path) as f:
-        camp = json.load(f)
+    camps = []
+    for cp in campaigns:
+        path = os.path.expanduser(cp)
+        if not os.path.isfile(path):
+            typer.echo(f"campaign file not found: {cp}", err=True)
+            raise typer.Exit(1)
+        with open(path) as f:
+            camps.append(json.load(f))
+    camp = camps[0]                                # meter/model identity comes from the first
 
     try:
-        result = calibration.fit(camp)
+        result = calibration.fit(camp) if len(camps) == 1 else calibration.fit_combined(camps)
     except RuntimeError as e:                     # nnls non-convergence — fail loud, not a traceback
         typer.echo(f"calibration did not converge: {e}", err=True)
         raise typer.Exit(1)
@@ -237,6 +242,8 @@ def calibrate_fit(
                                     model_calibrated_on=camp.get("model", "?"), created_at=_time.time())
     saved = profiles.save(profile, root=out)
     typer.echo(f"machine: {machine.label}")
+    if len(camps) > 1:
+        typer.echo(f"combined varying-duration fit: {len(camps)} campaigns, {result.n_samples} samples")
     typer.echo(f"fit (scalar): wall_J ≈ {result.a:.3f}·rail_J + {result.b:.3f}·Δt   "
                f"residual {result.residual_rel*100:.1f}%   repeatability {result.run_variance_rel*100:.1f}%")
     typer.echo(f"tier: {result.tier}")

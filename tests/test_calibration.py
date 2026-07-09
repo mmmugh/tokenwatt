@@ -108,3 +108,50 @@ def test_fit_fails_loud_on_contaminated_idle_baseline():
 def test_fit_fails_loud_when_no_clean_samples():
     with pytest.raises(ValueError, match="no clean"):
         cal.fit(_campaign([_s(9.0, 1.0, 1.0, batt=25.0)]))
+
+
+# --- fit_combined: varying-duration fit with a correctly-scoped band ---
+
+def _dur_A():
+    # wall = 1.5*rail + 0.5*dt at dt=120, symmetric ±1 pass jitter
+    return _campaign([_s(209, 100, 120, "prefill"), _s(211, 100, 120, "prefill"),
+                      _s(659, 400, 120, "decode"),  _s(661, 400, 120, "decode")])
+
+
+def _dur_B():
+    # same law at dt=600 (non-collinear with A in (rail,dt) -> a,b identifiable)
+    return _campaign([_s(449, 100, 600, "prefill"), _s(451, 100, 600, "prefill"),
+                      _s(899, 400, 600, "decode"),  _s(901, 400, 600, "decode")])
+
+
+def test_fit_combined_recovers_coefficients_across_durations():
+    r = cal.fit_combined([_dur_A(), _dur_B()])
+    assert r.a == pytest.approx(1.5, abs=0.02)     # varying Δt pins b; slope a recovered
+    assert r.b == pytest.approx(0.5, abs=0.02)
+    assert r.n_samples == 8 and r.n_excluded == 0
+
+
+def test_fit_combined_band_not_inflated_by_merging_durations():
+    # THE BUG this fixes: fit() on a hand-merged campaign groups pass-repeatability
+    # by cell NAME, so 'prefill' spanning 120s→600s makes (max−min)/mean explode and
+    # the band balloons — even though each duration is tightly repeatable. fit_combined
+    # measures repeatability WITHIN each duration, so the band stays honest.
+    A, B = _dur_A(), _dur_B()
+    combined = cal.fit_combined([A, B])
+    merged = cal.fit({**A, "samples": A["samples"] + B["samples"]})
+    assert merged.run_variance_rel > 0.3            # naive merge: conflated -> inflated
+    assert combined.run_variance_rel < 0.05         # within-duration: tight
+    assert combined.band_pct < merged.band_pct / 5
+
+
+def test_fit_combined_single_campaign_equals_fit():
+    c = _dur_A()
+    one, ref = cal.fit_combined([c]), cal.fit(c)
+    assert (one.a, one.b) == (ref.a, ref.b)
+    assert one.run_variance_rel == ref.run_variance_rel
+    assert one.band_pct == ref.band_pct
+
+
+def test_fit_combined_fails_loud_on_contaminated_idle():
+    with pytest.raises(ValueError, match="idle baseline"):
+        cal.fit_combined([_dur_A(), _campaign(_dur_B()["samples"], idle_batt=12.0)])
