@@ -81,6 +81,33 @@ def test_active_for_is_exact_model_match(tmp_path):
     assert active_for("mac15-14_apple-m3-ultra_96gb_macos26", "gpt-oss-120b", root=str(tmp_path)) is None
 
 
+def test_profile_persists_n_excluded_from_fit(tmp_path):
+    # the count of battery-contaminated cells dropped from the fit is provenance:
+    # a profile fit with cells excluded is less trustworthy, so the number must
+    # survive to disk (not just print to the console) and round-trip on load.
+    fit = FitResult(fit_type="scalar", a=1.83, b=0.4, residual_rel=0.03,
+                    run_variance_rel=0.02, band_pct=4.0, tier="plug-calibrated (±4%)",
+                    n_samples=6, n_passes=2, n_excluded=3)
+    p = profile_from(fit, _machine(),
+                     meter={"name": "shelly-plug", "tier": "smart_plug", "accuracy_pct": 1.0},
+                     model_calibrated_on="qwen3.6-27b", created_at=1_700_000_000.0)
+    assert p.n_excluded == 3
+    save(p, root=str(tmp_path))
+    got = load(p.machine_id, "qwen3.6-27b", root=str(tmp_path))
+    assert got.n_excluded == 3                         # round-tripped through disk
+
+
+def test_profile_without_n_excluded_defaults_to_zero(tmp_path):
+    # a profile written before n_excluded existed (no such key on disk) must still
+    # load, defaulting the count to 0 rather than failing to construct.
+    from dataclasses import asdict
+    p = _profile("qwen3.6-27b")
+    d = asdict(p); d.pop("n_excluded")                 # simulate a pre-M5 profile file
+    open(os.path.join(tmp_path, f"{p.machine_id}__qwen3-6-27b.json"), "w").write(json.dumps(d))
+    got = load(p.machine_id, "qwen3.6-27b", root=str(tmp_path))
+    assert got is not None and got.n_excluded == 0
+
+
 def test_keyed_load_rejects_slug_collision_wrong_model(tmp_path):
     # "qwen3-5-4b" and "qwen3.5-4b" both slug to "qwen3-5-4b", so they share one keyed file.
     # A stored profile calibrated on "qwen3-5-4b" must NOT be handed back for a request for

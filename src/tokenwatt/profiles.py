@@ -37,6 +37,7 @@ class Profile:
     model_calibrated_on: str
     macos: str
     created_at: float
+    n_excluded: int = 0              # battery-contaminated cells dropped from the fit (provenance)
     schema_version: int = _PROFILE_SCHEMA
 
 
@@ -48,7 +49,7 @@ def profile_from(fit: FitResult, machine: MachineInfo, meter: dict, *,
         run_variance_rel=fit.run_variance_rel, band_pct=fit.band_pct, tier=fit.tier,
         meter=meter, n_samples=fit.n_samples, n_passes=fit.n_passes,
         model_calibrated_on=model_calibrated_on, macos=machine.macos_major,
-        created_at=created_at)
+        created_at=created_at, n_excluded=fit.n_excluded)
 
 
 def save(profile: Profile, *, root: str | None = None) -> str:
