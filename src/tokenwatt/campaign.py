@@ -156,18 +156,25 @@ def _batt_peak(cur: float | None, battery) -> float | None:
 
 
 def measure_idle(meter: EnergyMeter, source: MeterSource, *, seconds: float = 300.0,
-                 battery=None, sleep=time.sleep, monotonic=time.monotonic) -> IdleRates:
+                 battery=None, battery_poll_s: float = 5.0,
+                 sleep=time.sleep, monotonic=time.monotonic) -> IdleRates:
     """Bracket an idle window (no inference) → per-rail idle watts + idle wall watts,
-    plus the peak battery activity seen (to gate the baseline on laptops)."""
+    plus the peak battery activity seen (to gate the baseline on laptops). Battery is
+    sampled ~every `battery_poll_s` across the window — a mid-window charge burst that
+    the boundary reads alone would miss must still gate the baseline."""
     t0 = monotonic()
     e0 = meter.cumulative()
     w0 = source.read_accumulated_wh()
-    batt_max = _batt_peak(None, battery)
-    sleep(seconds)
+    batt_max = None
+    next_batt = t0
+    while monotonic() - t0 < seconds:
+        sleep(min(battery_poll_s, seconds - (monotonic() - t0)))
+        if battery is not None and monotonic() >= next_batt:
+            batt_max = _batt_peak(batt_max, battery)
+            next_batt = monotonic() + battery_poll_s
     dt = max(monotonic() - t0, 1e-9)
     e_rail = meter.cumulative() - e0
     wall_j = max(source.read_accumulated_wh() - w0, 0.0) * 3600.0
-    batt_max = _batt_peak(batt_max, battery)
     return IdleRates(rail_w={r: j / dt for r, j in e_rail.joules.items()},
                      wall_w=wall_j / dt, dt_s=dt, battery_abs_w=batt_max)
 

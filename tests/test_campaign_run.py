@@ -42,6 +42,23 @@ def test_measure_idle_records_battery_abs_w():
     assert idle.battery_abs_w == pytest.approx(9.0)
 
 
+def test_measure_idle_catches_a_mid_window_battery_spike():
+    # a charge burst that begins AND ends between the boundary reads is invisible
+    # if idle only samples the battery at the window's start and end. Sampling
+    # across the window (like run_cell) must catch the peak, so a contaminated idle
+    # baseline is gated instead of silently poisoning the marginal subtraction.
+    clk = _Clock()
+    meter = FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0}))
+    source = FakeMeterSource([100.0, 100.05])
+    # low at the boundaries; a 50 W spike only in the middle of the window
+    battery = FakeBatterySource([BatteryFlux(1.0, False), BatteryFlux(1.0, False),
+                                 BatteryFlux(50.0, True), BatteryFlux(1.0, False)])
+    idle = campaign.measure_idle(meter, source, seconds=15.0, battery=battery,
+                                 sleep=clk.sleep, monotonic=clk.monotonic)
+    assert idle.battery_abs_w == pytest.approx(50.0)      # spike caught mid-window
+    assert idle.dt_s == pytest.approx(15.0)
+
+
 def test_run_cell_brackets_load_and_subtracts_idle_from_both_sides():
     clk = _Clock()
     # rail rises 10 J between the two cumulative() reads (start, end)
