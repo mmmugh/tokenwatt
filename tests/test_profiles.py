@@ -84,9 +84,11 @@ def test_active_for_is_exact_model_match(tmp_path):
 def test_save_refuses_unnamed_model(tmp_path):
     # a campaign whose served model id is unknown ("?") must NOT be written as a
     # degenerate "<machine>__.json" keyed profile — that pollutes the keyed
-    # namespace and would later be handed back for who-knows-which model. Fail loud.
-    with pytest.raises(ValueError, match="model"):
+    # namespace and would later be handed back for who-knows-which model. Fail loud
+    # and write nothing.
+    with pytest.raises(ValueError, match="unnamed model"):
         save(_profile("?"), root=str(tmp_path))
+    assert not os.listdir(str(tmp_path))               # nothing degenerate left behind
 
 
 def test_load_ignores_a_degenerate_keyed_profile(tmp_path):
@@ -98,6 +100,28 @@ def test_load_ignores_a_degenerate_keyed_profile(tmp_path):
     d = asdict(p)
     open(os.path.join(tmp_path, f"{p.machine_id}__.json"), "w").write(json.dumps(d))
     assert load(p.machine_id, "?", root=str(tmp_path)) is None
+
+
+def test_load_unnamed_model_ignores_legacy_file(tmp_path):
+    # same honesty gap on the LEGACY path: a pre-schema-2 "<machine>.json" whose model
+    # is the "?" sentinel must NOT be handed back for a request for an unnamed model.
+    # load() returns None for an unnamed model on EVERY path, keyed or legacy.
+    from dataclasses import asdict
+    p = _profile("?")                                  # model_calibrated_on == "?"
+    d = asdict(p)
+    open(os.path.join(tmp_path, f"{p.machine_id}.json"), "w").write(json.dumps(d))
+    assert load(p.machine_id, "?", root=str(tmp_path)) is None
+
+
+def test_list_profiles_returns_legacy_schema1_profile(tmp_path):
+    # list_profiles routes through _read, which accepts schema 1 and 2, so a legacy
+    # single-model "<machine>.json" (schema 1) is still surfaced, not dropped.
+    from dataclasses import asdict
+    legacy = _profile("qwen3.6-27b")
+    d = asdict(legacy); d["schema_version"] = 1
+    open(os.path.join(tmp_path, f"{legacy.machine_id}.json"), "w").write(json.dumps(d))
+    profs = list_profiles(root=str(tmp_path))
+    assert len(profs) == 1 and profs[0].model_calibrated_on == "qwen3.6-27b"
 
 
 def test_list_profiles_fails_loud_on_unknown_schema(tmp_path):
@@ -128,15 +152,16 @@ def test_profile_persists_n_excluded_from_fit(tmp_path):
     assert got.n_excluded == 3                         # round-tripped through disk
 
 
-def test_profile_without_n_excluded_defaults_to_zero(tmp_path):
-    # a profile written before n_excluded existed (no such key on disk) must still
-    # load, defaulting the count to 0 rather than failing to construct.
+def test_profile_without_n_excluded_defaults_to_none(tmp_path):
+    # a profile written before n_excluded existed (no such key on disk) has UNKNOWN
+    # provenance. Per the honesty contract an absent field is None, never a fabricated
+    # "0 cells excluded" (which would read as fully-trustworthy). It must load as None.
     from dataclasses import asdict
     p = _profile("qwen3.6-27b")
     d = asdict(p); d.pop("n_excluded")                 # simulate a pre-M5 profile file
     open(os.path.join(tmp_path, f"{p.machine_id}__qwen3-6-27b.json"), "w").write(json.dumps(d))
     got = load(p.machine_id, "qwen3.6-27b", root=str(tmp_path))
-    assert got is not None and got.n_excluded == 0
+    assert got is not None and got.n_excluded is None
 
 
 def test_keyed_load_rejects_slug_collision_wrong_model(tmp_path):

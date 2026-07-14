@@ -46,7 +46,7 @@ class Profile:
     model_calibrated_on: str
     macos: str
     created_at: float
-    n_excluded: int = 0              # battery-contaminated cells dropped from the fit (provenance)
+    n_excluded: int | None = None    # battery-contaminated cells dropped; None = provenance unknown (pre-M5 file)
     schema_version: int = _PROFILE_SCHEMA
 
 
@@ -82,12 +82,13 @@ def _read(path: str) -> Profile:
 def load(machine_id: str, model: str, *, root: str | None = None) -> Profile | None:
     d = _root(root)
     slug = _model_slug(model)
-    if slug:                                              # skip the degenerate "<machine>__.json"
-        keyed = os.path.join(d, f"{machine_id}__{slug}.json")
-        if os.path.isfile(keyed):
-            p = _read(keyed)
-            if p.model_calibrated_on == model:
-                return p
+    if not slug:                                             # an unnamed model matches no calibration
+        return None                                          # (keyed OR legacy) — cannot honestly resolve
+    keyed = os.path.join(d, f"{machine_id}__{slug}.json")
+    if os.path.isfile(keyed):
+        p = _read(keyed)
+        if p.model_calibrated_on == model:
+            return p
     legacy = os.path.join(d, f"{machine_id}.json")           # pre-schema-2 single-model file
     if os.path.isfile(legacy):
         p = _read(legacy)
