@@ -131,17 +131,17 @@ def test_fit_combined_recovers_coefficients_across_durations():
     assert r.n_samples == 8 and r.n_excluded == 0
 
 
-def test_fit_combined_band_not_inflated_by_merging_durations():
-    # THE BUG this fixes: fit() on a hand-merged campaign groups pass-repeatability
-    # by cell NAME, so 'prefill' spanning 120s→600s makes (max−min)/mean explode and
-    # the band balloons — even though each duration is tightly repeatable. fit_combined
-    # measures repeatability WITHIN each duration, so the band stays honest.
+def test_fit_refuses_merged_durations_and_fit_combined_stays_tight():
+    # fit() must not be silently misused on a hand-merged multi-duration campaign:
+    # it groups pass-repeatability by cell NAME across durations, so a merged
+    # 'prefill' spanning 120s→600s would balloon the band (~±150%). It now fails
+    # loud and points at fit_combined, which measures repeatability WITHIN each
+    # duration and keeps the band honest.
     A, B = _dur_A(), _dur_B()
+    with pytest.raises(ValueError, match="fit_combined"):
+        cal.fit({**A, "samples": A["samples"] + B["samples"]})
     combined = cal.fit_combined([A, B])
-    merged = cal.fit({**A, "samples": A["samples"] + B["samples"]})
-    assert merged.run_variance_rel > 0.3            # naive merge: conflated -> inflated
-    assert combined.run_variance_rel < 0.05         # within-duration: tight
-    assert combined.band_pct < merged.band_pct / 5
+    assert combined.run_variance_rel < 0.05         # within-duration: tight, not inflated
 
 
 def test_fit_combined_single_campaign_equals_fit():

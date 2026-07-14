@@ -80,6 +80,18 @@ def _contaminated(sample: dict) -> bool:
     return b is not None and b >= GATE_W
 
 
+def _spans_multiple_durations(samples: list[dict]) -> bool:
+    """True if any cell name spans clearly-different Δt — the fingerprint of a
+    hand-merged multi-duration campaign. A single campaign runs every cell at one
+    fixed duration, so >10% spread of dt_s within a cell means samples from different
+    durations were pooled, which `fit()` cannot band honestly (see `fit_combined`)."""
+    by_cell: dict[str, list[float]] = {}
+    for s in samples:
+        by_cell.setdefault(s["cell"], []).append(s["dt_s"])
+    return any(min(dts) > 0 and (max(dts) - min(dts)) / min(dts) > 0.10
+               for dts in by_cell.values())
+
+
 def fit(campaign: dict) -> FitResult:
     idle_batt = (campaign.get("idle") or {}).get("battery_abs_w")
     if idle_batt is not None and idle_batt >= GATE_W:
@@ -93,6 +105,12 @@ def fit(campaign: dict) -> FitResult:
         raise ValueError(
             "no clean samples to fit: every cell was battery-contaminated — "
             "charge to 100% / cap charging and re-run")
+    if _spans_multiple_durations(samples):
+        raise ValueError(
+            "fit() received samples spanning multiple durations within a cell (a "
+            "hand-merged multi-duration campaign): its pass-repeatability groups by "
+            "cell name across durations and would inflate the band — use fit_combined() "
+            "with one campaign per duration instead")
     a, b, residual_rel = fit_scalar(samples)
     rv = run_variance_rel(samples)
     acc = campaign["meter"]["accuracy_pct"]
