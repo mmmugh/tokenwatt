@@ -151,6 +151,37 @@ def test_run_cell_battery_none_when_no_source_or_desktop():
     assert s2.battery_abs_w is None
 
 
+class _CountingBattery:
+    """Wraps FakeBatterySource and counts read_flux() calls (a stand-in for the real
+    IOKitBatterySource, which spawns an `ioreg` subprocess per read)."""
+    def __init__(self, fluxes):
+        self._inner = FakeBatterySource(fluxes)
+        self.calls = 0
+
+    def read_flux(self):
+        self.calls += 1
+        return self._inner.read_flux()
+
+
+def test_run_cell_stops_polling_battery_after_a_none_read():
+    # a desktop has no battery: read_flux() returns None every call and (for real)
+    # spawns an `ioreg` subprocess each time. Once the source reports no battery,
+    # run_cell must latch it off and stop polling for the rest of the cell — one
+    # read, not one per poll interval.
+    clk = _Clock()
+    meter = FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0}))
+    source = FakeMeterSource([100.0, 100.1])
+    idle = campaign.IdleRates(rail_w={"cpu_total": 0.0}, wall_w=0.0, dt_s=1.0)
+    battery = _CountingBattery([None])
+    def load_fn():
+        clk.sleep(6.0)                                   # each call crosses a 5 s poll boundary
+        return ChatResult(tok_in=1, tok_out=1)
+    s = campaign.run_cell(meter, source, load_fn, idle, cell="c", model="m",
+                          seconds=20.0, battery=battery, sleep=clk.sleep, monotonic=clk.monotonic)
+    assert s.battery_abs_w is None                       # desktop: no battery signal
+    assert battery.calls == 1                            # latched off after the first None read
+
+
 def test_run_cell_zero_seconds_records_unknown_tokens_not_zero():
     # a zero/negative `seconds` window runs no requests at all -> requests == 0.
     # any_unknown never flips True in that case, so without the fix tok_in/tok_out

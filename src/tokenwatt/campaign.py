@@ -144,15 +144,17 @@ class CellSample:
     battery_abs_w: float | None = None    # max |battery power| during the cell; None if no battery
 
 
-def _batt_peak(cur: float | None, battery) -> float | None:
-    """Read the battery source (if any) and fold its magnitude into the running max.
-    Returns `cur` unchanged when there is no source or no battery (desktop)."""
+def _poll_battery(cur: float | None, battery):
+    """Read the battery source, fold its magnitude into the running max, and report
+    the source's liveness. Returns (new_max, battery); `battery` is latched to None
+    once the source reports no reading (desktop / no battery) so the caller stops
+    polling — avoids re-spawning `ioreg` every cycle on a Mac with no battery."""
     if battery is None:
-        return cur
+        return cur, None
     f = battery.read_flux()
     if f is None:
-        return cur
-    return f.abs_w if cur is None else max(cur, f.abs_w)
+        return cur, None
+    return (f.abs_w if cur is None else max(cur, f.abs_w)), battery
 
 
 def measure_idle(meter: EnergyMeter, source: MeterSource, *, seconds: float = 300.0,
@@ -170,7 +172,7 @@ def measure_idle(meter: EnergyMeter, source: MeterSource, *, seconds: float = 30
     while monotonic() - t0 < seconds:
         sleep(min(battery_poll_s, seconds - (monotonic() - t0)))
         if battery is not None and monotonic() >= next_batt:
-            batt_max = _batt_peak(batt_max, battery)
+            batt_max, battery = _poll_battery(batt_max, battery)
             next_batt = monotonic() + battery_poll_s
     dt = max(monotonic() - t0, 1e-9)
     e_rail = meter.cumulative() - e0
@@ -202,7 +204,7 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
             tok_in += r.tok_in
             tok_out += r.tok_out
         if battery is not None and monotonic() >= next_batt:
-            batt_max = _batt_peak(batt_max, battery)
+            batt_max, battery = _poll_battery(batt_max, battery)
             next_batt = monotonic() + battery_poll_s
     dt = max(monotonic() - t0, 1e-9)
     e_rail = meter.cumulative() - e0
