@@ -119,6 +119,44 @@ def test_calibrate_fit_writes_a_profile_from_a_campaign(tmp_path, monkeypatch):
     assert prof["model_calibrated_on"] == "qwen3.6-27b"
 
 
+def test_calibrate_fit_unnamed_model_fails_loud_not_traceback(tmp_path, monkeypatch):
+    # a campaign whose served model id is unknown ("?") makes profiles.save() refuse
+    # to key a degenerate profile. The CLI must surface that as a clean error + Exit(1),
+    # not an uncaught traceback — i.e. the save() call must be inside the error handling.
+    campaign = {
+        "schema_version": 1, "timestamp": 0.0, "model": "?",
+        "meter": {"name": "shelly-plug", "tier": "smart_plug", "accuracy_pct": 1.0},
+        "cell_seconds": 300.0, "passes": 2,
+        "idle": {"rail_w": {"gpu": 0.1}, "wall_w": 7.0, "dt_s": 300.0},
+        "samples": [
+            {"cell": "prefill", "model": "?", "dt_s": 300.0,
+             "e_rail_marginal_j": {"gpu": 1000.0}, "e_wall_marginal_j": 2000.0,
+             "tok_in": 1, "tok_out": 1, "requests": 5},
+            {"cell": "prefill", "model": "?", "dt_s": 300.0,
+             "e_rail_marginal_j": {"gpu": 1000.0}, "e_wall_marginal_j": 2020.0,
+             "tok_in": 1, "tok_out": 1, "requests": 5},
+            {"cell": "decode", "model": "?", "dt_s": 300.0,
+             "e_rail_marginal_j": {"gpu": 5000.0}, "e_wall_marginal_j": 10000.0,
+             "tok_in": 1, "tok_out": 1, "requests": 5},
+            {"cell": "decode", "model": "?", "dt_s": 300.0,
+             "e_rail_marginal_j": {"gpu": 5000.0}, "e_wall_marginal_j": 10050.0,
+             "tok_in": 1, "tok_out": 1, "requests": 5},
+        ],
+    }
+    cpath = tmp_path / "campaign.json"
+    cpath.write_text(_json.dumps(campaign))
+    from tokenwatt import machineid
+    from tokenwatt.machineid import MachineInfo
+    fake = MachineInfo("testmac_apple-test_16gb_macos99", "Apple Test · 16 GB · TestMac",
+                       "Apple Test", "TestMac", 16, "99")
+    monkeypatch.setattr(machineid, "detect_machine", lambda: fake)
+
+    res = runner.invoke(app, ["calibrate", "fit", str(cpath), "--out", str(tmp_path / "profiles")])
+    assert res.exit_code == 1
+    assert "cannot save" in res.output.lower()                    # clean diagnosis...
+    assert res.exception is None or isinstance(res.exception, SystemExit)   # ...not a raw traceback
+
+
 def test_calibrate_fit_missing_campaign_file_fails_loud(tmp_path):
     res = runner.invoke(app, ["calibrate", "fit", str(tmp_path / "nope.json")])
     assert res.exit_code == 1

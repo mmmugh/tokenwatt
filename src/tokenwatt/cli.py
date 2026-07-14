@@ -238,9 +238,13 @@ def calibrate_fit(
         except Exception as e:
             typer.echo(f"(note: could not read device identity from {meter_host}: {type(e).__name__})", err=True)
 
-    profile = profiles.profile_from(result, machine, meter,
-                                    model_calibrated_on=camp.get("model", "?"), created_at=_time.time())
-    saved = profiles.save(profile, root=out)
+    try:
+        profile = profiles.profile_from(result, machine, meter,
+                                        model_calibrated_on=camp.get("model", "?"), created_at=_time.time())
+        saved = profiles.save(profile, root=out)
+    except ValueError as e:                        # e.g. an unnamed model can't be keyed — fail loud
+        typer.echo(f"cannot save profile: {e}", err=True)
+        raise typer.Exit(1)
     typer.echo(f"machine: {machine.label}")
     if len(camps) > 1:
         typer.echo(f"combined varying-duration fit: {len(camps)} campaigns, {result.n_samples} samples")
