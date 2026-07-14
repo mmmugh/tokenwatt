@@ -144,17 +144,36 @@ class CellSample:
     battery_abs_w: float | None = None    # max |battery power| during the cell; None if no battery
 
 
-def _poll_battery(cur: float | None, battery):
-    """Read the battery source, fold its magnitude into the running max, and report
-    the source's liveness. Returns (new_max, battery); `battery` is latched to None
-    once the source reports no reading (desktop / no battery) so the caller stops
-    polling — avoids re-spawning `ioreg` every cycle on a Mac with no battery."""
-    if battery is None:
-        return cur, None
-    f = battery.read_flux()
-    if f is None:
-        return cur, None
-    return (f.abs_w if cur is None else max(cur, f.abs_w)), battery
+_BATTERY_LATCH_NONES = 3   # consecutive None reads (no battery ever seen) => desktop; stop polling
+
+
+class _BatteryProbe:
+    """Tracks the peak battery magnitude across a window and stops re-spawning `ioreg`
+    on a desktop. It latches the source off ONLY after `latch_after` consecutive None
+    reads with no battery ever seen (a desktop returns None every read). A single real
+    reading proves a battery exists and disables latching for the rest of the window,
+    so a transient `ioreg` failure (read_flux() also returns None on any exception)
+    never latches off a laptop and never drops a charge spike that follows it."""
+
+    def __init__(self, battery, latch_after: int = _BATTERY_LATCH_NONES) -> None:
+        self._battery = battery
+        self._latch_after = latch_after
+        self._seen = False
+        self._none_streak = 0
+        self.max: float | None = None
+
+    def poll(self) -> None:
+        if self._battery is None:
+            return
+        f = self._battery.read_flux()
+        if f is None:
+            self._none_streak += 1
+            if not self._seen and self._none_streak >= self._latch_after:
+                self._battery = None                 # desktop: no battery, stop re-spawning ioreg
+            return
+        self._seen = True
+        self._none_streak = 0
+        self.max = f.abs_w if self.max is None else max(self.max, f.abs_w)
 
 
 def measure_idle(meter: EnergyMeter, source: MeterSource, *, seconds: float = 300.0,
@@ -167,18 +186,18 @@ def measure_idle(meter: EnergyMeter, source: MeterSource, *, seconds: float = 30
     t0 = monotonic()
     e0 = meter.cumulative()
     w0 = source.read_accumulated_wh()
-    batt_max = None
+    probe = _BatteryProbe(battery)
     next_batt = t0
     while monotonic() - t0 < seconds:
-        sleep(min(battery_poll_s, seconds - (monotonic() - t0)))
-        if battery is not None and monotonic() >= next_batt:
-            batt_max, battery = _poll_battery(batt_max, battery)
+        sleep(max(0.0, min(battery_poll_s, seconds - (monotonic() - t0))))
+        if monotonic() >= next_batt:
+            probe.poll()
             next_batt = monotonic() + battery_poll_s
     dt = max(monotonic() - t0, 1e-9)
     e_rail = meter.cumulative() - e0
     wall_j = max(source.read_accumulated_wh() - w0, 0.0) * 3600.0
     return IdleRates(rail_w={r: j / dt for r, j in e_rail.joules.items()},
-                     wall_w=wall_j / dt, dt_s=dt, battery_abs_w=batt_max)
+                     wall_w=wall_j / dt, dt_s=dt, battery_abs_w=probe.max)
 
 
 def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], ChatResult],
@@ -193,7 +212,7 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
     tok_in = tok_out = 0
     requests = 0
     any_unknown = False
-    batt_max = None
+    probe = _BatteryProbe(battery)
     next_batt = t0
     while monotonic() - t0 < seconds:
         r = load_fn()
@@ -203,8 +222,8 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
         else:
             tok_in += r.tok_in
             tok_out += r.tok_out
-        if battery is not None and monotonic() >= next_batt:
-            batt_max, battery = _poll_battery(batt_max, battery)
+        if monotonic() >= next_batt:
+            probe.poll()
             next_batt = monotonic() + battery_poll_s
     dt = max(monotonic() - t0, 1e-9)
     e_rail = meter.cumulative() - e0
@@ -217,7 +236,7 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
                       e_wall_marginal_j=marg_wall,
                       tok_in=None if (any_unknown or requests == 0) else tok_in,
                       tok_out=None if (any_unknown or requests == 0) else tok_out,
-                      requests=requests, battery_abs_w=batt_max)
+                      requests=requests, battery_abs_w=probe.max)
 
 
 _CAMPAIGN_SCHEMA = 1

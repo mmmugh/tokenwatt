@@ -163,11 +163,11 @@ class _CountingBattery:
         return self._inner.read_flux()
 
 
-def test_run_cell_stops_polling_battery_after_a_none_read():
+def test_run_cell_latches_battery_off_after_repeated_none_reads():
     # a desktop has no battery: read_flux() returns None every call and (for real)
-    # spawns an `ioreg` subprocess each time. Once the source reports no battery,
-    # run_cell must latch it off and stop polling for the rest of the cell — one
-    # read, not one per poll interval.
+    # spawns an `ioreg` subprocess each time. After a few consecutive None reads with
+    # no battery ever seen, run_cell must latch the source off and stop polling for
+    # the rest of the cell — a bounded handful of reads, not one per poll interval.
     clk = _Clock()
     meter = FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0}))
     source = FakeMeterSource([100.0, 100.1])
@@ -177,9 +177,47 @@ def test_run_cell_stops_polling_battery_after_a_none_read():
         clk.sleep(6.0)                                   # each call crosses a 5 s poll boundary
         return ChatResult(tok_in=1, tok_out=1)
     s = campaign.run_cell(meter, source, load_fn, idle, cell="c", model="m",
-                          seconds=20.0, battery=battery, sleep=clk.sleep, monotonic=clk.monotonic)
+                          seconds=60.0, battery=battery, sleep=clk.sleep, monotonic=clk.monotonic)
     assert s.battery_abs_w is None                       # desktop: no battery signal
-    assert battery.calls == 1                            # latched off after the first None read
+    assert battery.calls == 3                            # latched off after 3 Nones, not ~10 polls
+
+
+def test_run_cell_catches_a_spike_after_a_transient_none():
+    # THE REGRESSION GUARD: IOKitBatterySource.read_flux() returns None on ANY
+    # transient ioreg failure, not only on a desktop. Latching off at the FIRST None
+    # would drop a real charge burst that follows — silently promoting a contaminated
+    # cell as clean. Once a real reading is seen the source is known to have a battery,
+    # so a transient None must NOT stop polling and the later spike must still be caught.
+    clk = _Clock()
+    meter = FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0}))
+    source = FakeMeterSource([100.0, 100.1])
+    idle = campaign.IdleRates(rail_w={"cpu_total": 0.0}, wall_w=0.0, dt_s=1.0)
+    battery = FakeBatterySource([BatteryFlux(1.0, False), None,
+                                 BatteryFlux(50.0, True), BatteryFlux(1.0, False)])
+    def load_fn():
+        clk.sleep(6.0)
+        return ChatResult(tok_in=1, tok_out=1)
+    s = campaign.run_cell(meter, source, load_fn, idle, cell="c", model="m",
+                          seconds=24.0, battery=battery, sleep=clk.sleep, monotonic=clk.monotonic)
+    assert s.battery_abs_w == pytest.approx(50.0)        # spike after the transient None is caught
+
+
+def test_run_cell_does_not_latch_on_a_real_zero_reading():
+    # invariant guard: a laptop idling at 0.0 W (not charging) reads BatteryFlux(0.0),
+    # which is a REAL reading, not None. It must not be mistaken for a desktop and
+    # latched off — a charge burst later in the cell must still be caught.
+    clk = _Clock()
+    meter = FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0}))
+    source = FakeMeterSource([100.0, 100.1])
+    idle = campaign.IdleRates(rail_w={"cpu_total": 0.0}, wall_w=0.0, dt_s=1.0)
+    battery = FakeBatterySource([BatteryFlux(0.0, False), BatteryFlux(0.0, False),
+                                 BatteryFlux(0.0, False), BatteryFlux(30.0, True)])
+    def load_fn():
+        clk.sleep(6.0)
+        return ChatResult(tok_in=1, tok_out=1)
+    s = campaign.run_cell(meter, source, load_fn, idle, cell="c", model="m",
+                          seconds=30.0, battery=battery, sleep=clk.sleep, monotonic=clk.monotonic)
+    assert s.battery_abs_w == pytest.approx(30.0)        # zero readings never latch; spike caught
 
 
 def test_run_cell_zero_seconds_records_unknown_tokens_not_zero():
