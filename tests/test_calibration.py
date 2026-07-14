@@ -138,10 +138,27 @@ def test_fit_refuses_merged_durations_and_fit_combined_stays_tight():
     # loud and points at fit_combined, which measures repeatability WITHIN each
     # duration and keeps the band honest.
     A, B = _dur_A(), _dur_B()
+    merged = A["samples"] + B["samples"]
+    # the guard is NECESSARY: naively pooling durations conflates the by-cell
+    # repeatability fit() would use for its band (a 'prefill' spanning 120s→600s)...
+    assert cal.run_variance_rel(merged) > 0.3
+    # ...so fit() refuses it and points at fit_combined
     with pytest.raises(ValueError, match="fit_combined"):
-        cal.fit({**A, "samples": A["samples"] + B["samples"]})
-    combined = cal.fit_combined([A, B])
-    assert combined.run_variance_rel < 0.05         # within-duration: tight, not inflated
+        cal.fit({**A, "samples": merged})
+    # fit_combined measures repeatability WITHIN each duration and stays tight
+    assert cal.fit_combined([A, B]).run_variance_rel < 0.05
+
+
+def test_fit_tolerates_realistic_within_cell_duration_jitter():
+    # dt_s is MEASURED wall clock: run_cell overshoots the target cell_seconds by up
+    # to one request latency and quantizes by completed-request count, so a single
+    # (one-duration) decode cell's passes routinely differ >10% — e.g. 306s then 343s
+    # on a slow model. fit() must NOT mistake that pass jitter for a hand-merged
+    # multi-duration campaign and refuse a perfectly valid calibration.
+    s = [_s(600, 400, 298, "prefill"), _s(612, 408, 305, "prefill"),
+         _s(1220, 800, 306, "decode"), _s(1372, 900, 343, "decode")]   # decode dt jitter +12%
+    r = cal.fit(_campaign(s))                        # must not raise
+    assert r.n_samples == 4
 
 
 def test_fit_combined_single_campaign_equals_fit():
