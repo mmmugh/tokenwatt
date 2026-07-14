@@ -81,6 +81,18 @@ def test_active_for_is_exact_model_match(tmp_path):
     assert active_for("mac15-14_apple-m3-ultra_96gb_macos26", "gpt-oss-120b", root=str(tmp_path)) is None
 
 
+def test_list_profiles_fails_loud_on_unknown_schema(tmp_path):
+    # list_profiles must validate each file through the SAME fail-loud reader as
+    # load(): a profile with an unrecognized schema is a real problem to surface,
+    # not something to hand back as a silently-constructed Profile (or crash with a
+    # bare TypeError on the missing fields).
+    save(_profile("qwen3.6-27b"), root=str(tmp_path))
+    bad = os.path.join(tmp_path, "mac15-14_apple-m3-ultra_96gb_macos26__gpt-oss.json")
+    open(bad, "w").write(json.dumps({"schema_version": 99, "machine_id": "x"}))
+    with pytest.raises(ValueError, match="schema"):
+        list_profiles(root=str(tmp_path))
+
+
 def test_profile_persists_n_excluded_from_fit(tmp_path):
     # the count of battery-contaminated cells dropped from the fit is provenance:
     # a profile fit with cells excluded is less trustworthy, so the number must

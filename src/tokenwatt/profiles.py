@@ -96,6 +96,5 @@ def list_profiles(*, root: str | None = None) -> list[Profile]:
     out = []
     for name in sorted(os.listdir(d)):
         if name.endswith(".json"):
-            with open(os.path.join(d, name)) as f:
-                out.append(Profile(**json.load(f)))
+            out.append(_read(os.path.join(d, name)))     # same schema check / fail-loud as load()
     return out
