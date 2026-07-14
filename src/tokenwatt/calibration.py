@@ -81,19 +81,20 @@ def _contaminated(sample: dict) -> bool:
 
 
 def _spans_multiple_durations(samples: list[dict]) -> bool:
-    """True if any cell name spans a large Δt RATIO — the fingerprint of a hand-merged
-    multi-duration campaign (the sweep's 120/360/720s durations differ by 2–6×). dt_s is
-    MEASURED wall clock: run_cell overshoots the target cell_seconds by up to one request
-    latency and quantizes by completed-request count, so a single-duration cell's passes
-    can jitter toward ~1.5× on short cells with slow (long-decode) requests. A >2× within-
-    cell ratio can only come from genuinely different configured durations, so this stays
-    clear of that measurement jitter while still catching the merges that would inflate
-    `fit()`'s by-cell band (see `fit_combined`). A near-equal merge (<2×) is intentionally
-    let through: `b` is barely identifiable at that spacing, so the band harm is small."""
+    """True if any cell name spans a large MEASURED-Δt ratio — the fingerprint of a
+    hand-merged multi-duration campaign. The threshold is on measured, not nominal, dt:
+    run_cell's dt_s overshoots the target cell_seconds by up to one request latency, and
+    the SHORTER cell overshoots proportionally more, so the sweep's tightest genuine merge
+    (360s+720s) measures only ~1.7× — not the nominal 2×. Meanwhile a single-duration
+    cell's passes jitter at most ~1.5× (well-sized cells stay near 1.1×). A >1.6× within-
+    cell ratio therefore sits in the gap: it flags the merges that would inflate `fit()`'s
+    by-cell band (redirecting to `fit_combined`) while clearing measurement jitter on valid
+    data. Best-effort: a near-equal merge (<1.6× measured) is let through, and fit() then
+    reports a wide, HONEST band for it — it never fabricates a number."""
     by_cell: dict[str, list[float]] = {}
     for s in samples:
         by_cell.setdefault(s["cell"], []).append(s["dt_s"])
-    return any(min(dts) > 0 and max(dts) / min(dts) > 2.0 for dts in by_cell.values())
+    return any(min(dts) > 0 and max(dts) / min(dts) > 1.6 for dts in by_cell.values())
 
 
 def fit(campaign: dict) -> FitResult:

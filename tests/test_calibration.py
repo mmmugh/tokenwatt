@@ -149,6 +149,17 @@ def test_fit_refuses_merged_durations_and_fit_combined_stays_tight():
     assert cal.fit_combined([A, B]).run_variance_rel < 0.05
 
 
+def test_fit_catches_slow_model_360_720_merge_despite_overshoot():
+    # the tightest genuine merge in the model sweep is 360s+720s. Because measured dt_s
+    # overshoots the SHORTER cell proportionally more, that merge measures ~1.7× (decode
+    # dt ~420 vs ~720), well below the nominal 2×. The guard's threshold must sit below
+    # ~1.72 so this real merge is still redirected to fit_combined, not silently fit().
+    merged = [_s(600, 400, 420, "decode"), _s(600, 400, 420, "decode"),
+              _s(1200, 800, 720, "decode"), _s(1200, 800, 720, "decode")]   # ratio 1.714
+    with pytest.raises(ValueError, match="fit_combined"):
+        cal.fit(_campaign(merged))
+
+
 def test_fit_tolerates_realistic_within_cell_duration_jitter():
     # dt_s is MEASURED wall clock: run_cell overshoots the target cell_seconds by up
     # to one request latency and quantizes by completed-request count, so a single
