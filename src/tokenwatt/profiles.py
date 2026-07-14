@@ -21,6 +21,15 @@ def _model_slug(model: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", model.lower()).strip("-")
 
 
+def _require_model_slug(model: str) -> str:
+    slug = _model_slug(model)
+    if not slug:                                          # "?"/""/punctuation-only -> degenerate
+        raise ValueError(
+            f"cannot key a profile on an unnamed model {model!r}: supply the served "
+            f"model id (e.g. from /v1/models)")
+    return slug
+
+
 @dataclass(frozen=True)
 class Profile:
     machine_id: str
@@ -55,7 +64,7 @@ def profile_from(fit: FitResult, machine: MachineInfo, meter: dict, *,
 def save(profile: Profile, *, root: str | None = None) -> str:
     d = _root(root)
     os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, f"{profile.machine_id}__{_model_slug(profile.model_calibrated_on)}.json")
+    path = os.path.join(d, f"{profile.machine_id}__{_require_model_slug(profile.model_calibrated_on)}.json")
     with open(path, "w") as f:
         json.dump(asdict(profile), f, indent=2)
     return path
@@ -72,11 +81,13 @@ def _read(path: str) -> Profile:
 
 def load(machine_id: str, model: str, *, root: str | None = None) -> Profile | None:
     d = _root(root)
-    keyed = os.path.join(d, f"{machine_id}__{_model_slug(model)}.json")
-    if os.path.isfile(keyed):
-        p = _read(keyed)
-        if p.model_calibrated_on == model:
-            return p
+    slug = _model_slug(model)
+    if slug:                                              # skip the degenerate "<machine>__.json"
+        keyed = os.path.join(d, f"{machine_id}__{slug}.json")
+        if os.path.isfile(keyed):
+            p = _read(keyed)
+            if p.model_calibrated_on == model:
+                return p
     legacy = os.path.join(d, f"{machine_id}.json")           # pre-schema-2 single-model file
     if os.path.isfile(legacy):
         p = _read(legacy)

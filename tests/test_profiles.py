@@ -81,6 +81,25 @@ def test_active_for_is_exact_model_match(tmp_path):
     assert active_for("mac15-14_apple-m3-ultra_96gb_macos26", "gpt-oss-120b", root=str(tmp_path)) is None
 
 
+def test_save_refuses_unnamed_model(tmp_path):
+    # a campaign whose served model id is unknown ("?") must NOT be written as a
+    # degenerate "<machine>__.json" keyed profile — that pollutes the keyed
+    # namespace and would later be handed back for who-knows-which model. Fail loud.
+    with pytest.raises(ValueError, match="model"):
+        save(_profile("?"), root=str(tmp_path))
+
+
+def test_load_ignores_a_degenerate_keyed_profile(tmp_path):
+    # defense against a "<machine>__.json" left by older code: a request for an
+    # unnamed model ("?") must not resolve to it — an unknown model cannot be
+    # honestly matched to any calibration, so load() returns None.
+    from dataclasses import asdict
+    p = _profile("?")                                  # model_calibrated_on == "?"
+    d = asdict(p)
+    open(os.path.join(tmp_path, f"{p.machine_id}__.json"), "w").write(json.dumps(d))
+    assert load(p.machine_id, "?", root=str(tmp_path)) is None
+
+
 def test_list_profiles_fails_loud_on_unknown_schema(tmp_path):
     # list_profiles must validate each file through the SAME fail-loud reader as
     # load(): a profile with an unrecognized schema is a real problem to surface,
