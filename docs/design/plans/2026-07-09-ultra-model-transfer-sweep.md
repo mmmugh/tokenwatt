@@ -46,7 +46,12 @@ Memory: 96 GB total. gpt-oss-120b (59 GB) / Coder-Next (60 GB) won't co-exist wi
 1. **gpt-oss-120b serves under mlx_lm 0.31.3** (MXFP4 support) — do a 1-request smoke on port 8770 first; if it fails, that model drops out (or upgrade mlx_lm in a scratch env).
 2. **Studio still metered by .104** (it was unplugged once — correlation-check: idle vs a short inference burst, like we did before).
 3. **Memory headroom** with mlx-tui stopped: each big model + system < 96 GB (should be ~59+10 GB, fine).
-4. Model-id matching: the campaign `--model` must equal what `/v1/models` reports for each server.
+4. **Model-id: pass the exact `--model` target as the campaign `--model`—do NOT read it from `/v1/models`.**
+   mlx_lm.server's `/v1/models` lists ALL cached models (not the loaded one), and it serves the model
+   named in each *request* (loading on demand), so reading `data[0]` there silently drives the wrong
+   model. Warm the target up (a 1-token request) before the campaign so the on-demand load happens
+   outside the idle baseline. (This bit night 1's first launch—caught by an id sanity-check in the log
+   and fixed mid-run; see Results.)
 
 ## Deliverable
 A 5-model table (a, b, band, wall/rail) + the verdict: is `b` model-dependent enough to require
@@ -59,3 +64,33 @@ per-model keying, or does per-machine (one model) generalize? Plus per-model lin
 - 6th fast-token model (Gemma-4-E4B, license permitting) — deferred; not in this sweep.
 
 Remaining before a GO is just the run-time **verify-at-start** gates above (gpt-oss serves, .104 metering, memory, model-id).
+
+## Results — Night 1 (2026-07-14, M3 Ultra, plug-calibrated)
+
+3 of 5 models fitted (27b re-run + mid MoE); Coder-Next + gpt-oss deferred to night 2.
+Each fit is `calibrate fit d120 d360 d720` (fit_combined), 27 samples.
+
+| Model | Type | `a` (rail→wall) | `b` (W per load-second) | Band |
+|---|---|---|---|---|
+| Qwen3.5-4B-4bit | small dense | 1.551 | 15.81 | ±2.6% |
+| qwen3.6-27b-8bit | mid dense | 1.572 | 17.82 | ±2.8% |
+| qwen3.6-35b-a3b (thinking) | mid MoE | 1.561 | 20.62 | ±3.7% |
+
+**Verdict (partial, pending night 2):**
+- **`a` is a machine constant.** 1.551→1.572 across 4B→35B = ±0.7%, inside every band. The rail→wall
+  conversion is a property of the SoC power delivery, not the model—calibrate `a` once per machine.
+- **`b` is model-dependent and tracks memory footprint, not compute.** It climbs monotonically
+  15.8→17.8→20.6 W with model size; the MoE (35b-a3b, ~35 GB, ~3B active) has the *highest* `b` despite
+  being the cheapest per token. So `b` is the per-second overhead of holding a large model resident
+  (DRAM bandwidth, fans, regulator shift).
+- **Per-(machine,model) keying is justified.** `b·Δt` is ~12% of wall energy, so borrowing another
+  model's `b` costs ~1.4% for neighbors up to ~6% for the 4B-vs-35B extreme—larger than the ±3% bands
+  (matters at the plug-calibrated tier; negligible for the estimated ±15–30% tier).
+- **Reproducibility:** the 27b re-run (a=1.572, b=17.82) reproduced the earlier varying-duration 27b fit
+  (a=1.547, b=17.68) within ~1.6% / ~0.8% across separate nights and durations.
+- **Open hypothesis for night 2:** does `b` keep climbing with footprint (Coder-Next 60 GB, gpt-oss
+  120b 59 GB)? If `b ≈ f(model_GB)` holds, `b` could be predicted from size without calibrating every model.
+
+Ops notes: all 6 campaigns passed first-try; linearity held (`a` flat across durations for both models).
+The 35b-a3b profile keyed on its local *path* (served id), so it won't match a production model-id—re-key
+if used live. gpt-oss-120b-MXFP4 confirmed serving under mlx_lm 0.31.3 (night 2 clear).
