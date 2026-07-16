@@ -18,10 +18,20 @@ from tokenwatt.cli import app
 runner = CliRunner()
 
 
-def test_calibrate_probe_help_lists_meter_host():
-    res = runner.invoke(app, ["calibrate", "probe", "--help"])
-    assert res.exit_code == 0
-    assert "--meter-host" in res.output
+def _declared_option_flags(*command_path):
+    """Option strings a (sub)command declares, read from the Click command object rather than the
+    Rich-rendered --help TEXT. The rendered help wraps by terminal width and is flaky under CI's
+    no-TTY console (the option substring can split across lines), so assert on intent, not layout."""
+    import typer
+    cmd = typer.main.get_command(app)
+    for name in command_path:
+        cmd = cmd.commands[name]
+    return {opt for p in cmd.params for opt in p.opts}
+
+
+def test_calibrate_probe_declares_meter_host():
+    assert "--meter-host" in _declared_option_flags("calibrate", "probe")
+    assert runner.invoke(app, ["calibrate", "probe", "--help"]).exit_code == 0   # help still renders
 
 
 def test_calibrate_probe_without_host_fails_loud():
@@ -45,10 +55,10 @@ def test_calibrate_probe_failure_reason_goes_to_stderr(monkeypatch):
     assert "meter unreachable: ConnectError" not in res.stdout
 
 
-def test_calibrate_campaign_help_lists_upstream_and_model():
-    res = runner.invoke(app, ["calibrate", "campaign", "--help"])
-    assert res.exit_code == 0
-    assert "--upstream" in res.output and "--model" in res.output
+def test_calibrate_campaign_declares_upstream_and_model():
+    flags = _declared_option_flags("calibrate", "campaign")
+    assert "--upstream" in flags and "--model" in flags
+    assert runner.invoke(app, ["calibrate", "campaign", "--help"]).exit_code == 0   # help still renders
 
 
 def test_calibrate_campaign_requires_upstream_and_model():
