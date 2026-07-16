@@ -65,32 +65,36 @@ per-model keying, or does per-machine (one model) generalize? Plus per-model lin
 
 Remaining before a GO is just the run-time **verify-at-start** gates above (gpt-oss serves, .104 metering, memory, model-id).
 
-## Results — Night 1 (2026-07-14, M3 Ultra, plug-calibrated)
+## Results — complete 5-model sweep (M3 Ultra, plug-calibrated)
 
-3 of 5 models fitted (27b re-run + mid MoE); Coder-Next + gpt-oss deferred to night 2.
-Each fit is `calibrate fit d120 d360 d720` (fit_combined), 27 samples.
+Night 1 (2026-07-14): 4B ref + 27b re-run + 35b-a3b. Night 2 (2026-07-15): Coder-Next + gpt-oss.
+Each fit is `calibrate fit d120 d360 d720` (fit_combined), 27 samples; all 30 campaigns passed first-try.
 
-| Model | Type | `a` (rail→wall) | `b` (W per load-second) | Band |
-|---|---|---|---|---|
-| Qwen3.5-4B-4bit | small dense | 1.551 | 15.81 | ±2.6% |
-| qwen3.6-27b-8bit | mid dense | 1.572 | 17.82 | ±2.8% |
-| qwen3.6-35b-a3b (thinking) | mid MoE | 1.561 | 20.62 | ±3.7% |
+| Model | Type | ~GB | `a` (rail→wall) | `b` (W per load-second) | Band |
+|---|---|---|---|---|---|
+| Qwen3.5-4B-4bit | small dense | 2.5 | 1.551 | 15.81 | ±2.6% |
+| qwen3.6-27b-8bit | mid dense | 27 | 1.572 | 17.82 | ±2.8% |
+| qwen3.6-35b-a3b (thinking) | mid MoE | 35 | 1.561 | 20.62 | ±3.7% |
+| Qwen3-Coder-Next-6bit | large MoE | 60 | 1.506 | 21.61 | ±4.5% |
+| gpt-oss-120b-MXFP4-Q8 | huge MoE | 59 | 1.476 | 21.15 | ±2.7% |
 
-**Verdict (partial, pending night 2):**
-- **`a` is a machine constant.** 1.551→1.572 across 4B→35B = ±0.7%, inside every band. The rail→wall
-  conversion is a property of the SoC power delivery, not the model—calibrate `a` once per machine.
-- **`b` is model-dependent and tracks memory footprint, not compute.** It climbs monotonically
-  15.8→17.8→20.6 W with model size; the MoE (35b-a3b, ~35 GB, ~3B active) has the *highest* `b` despite
-  being the cheapest per token. So `b` is the per-second overhead of holding a large model resident
-  (DRAM bandwidth, fans, regulator shift).
-- **Per-(machine,model) keying is justified.** `b·Δt` is ~12% of wall energy, so borrowing another
-  model's `b` costs ~1.4% for neighbors up to ~6% for the 4B-vs-35B extreme—larger than the ±3% bands
-  (matters at the plug-calibrated tier; negligible for the estimated ±15–30% tier).
+**Verdict (full):**
+- **`b` grows with memory footprint, then SATURATES.** 15.8→17.8→20.6, then a plateau at ~21–22 W for
+  everything ≥35 GB. So `b ≈ f(model_GB)` holds only as a *saturating* curve—there is a ceiling to the
+  per-second overhead (fans, regulators, memory subsystem max out), not unbounded growth.
+- **`a` is NOT the clean machine constant night 1 implied (walk-back).** It looked flat across 4B→35B
+  (1.55–1.57, ±0.7%), but the two huge MoEs pull it DOWN ~6% (gpt-oss 1.476, Coder-Next 1.506). gpt-oss'
+  ±2.7% band puts that below the mid cluster for real; Coder-Next's ±4.5% is wider (suggestive). Likely
+  cause: memory-bound huge MoEs dump more energy into the *measured* DRAM rail, so less rail→wall
+  multiplier is needed. So `a` is roughly constant within a size class but drifts for huge models.
+- **Per-(machine,model) keying is justified—more than night 1 said.** `a` and `b` partly cancel
+  (higher-`a` models have lower `b`), so borrowing one model's profile for another costs ~2% on
+  decode-heavy loads but up to ~5% on prefill-heavy loads at the 4B-vs-gpt-oss extreme—larger than the
+  plug-calibrated bands. Matters at the plug tier; negligible for the estimated ±15–30% tier.
 - **Reproducibility:** the 27b re-run (a=1.572, b=17.82) reproduced the earlier varying-duration 27b fit
   (a=1.547, b=17.68) within ~1.6% / ~0.8% across separate nights and durations.
-- **Open hypothesis for night 2:** does `b` keep climbing with footprint (Coder-Next 60 GB, gpt-oss
-  120b 59 GB)? If `b ≈ f(model_GB)` holds, `b` could be predicted from size without calibrating every model.
 
-Ops notes: all 6 campaigns passed first-try; linearity held (`a` flat across durations for both models).
-The 35b-a3b profile keyed on its local *path* (served id), so it won't match a production model-id—re-key
-if used live. gpt-oss-120b-MXFP4 confirmed serving under mlx_lm 0.31.3 (night 2 clear).
+Ops notes: linearity held (`a` flat across durations within each model). The 35b-a3b profile keyed on
+its local *path* (served id), so it will not match a production model-id—re-key if used live. The bug
+that bit night 1's first launch (reading the served id from mlx_lm.server `/v1/models`) is fixed in both
+orchestrators; see verify-at-start item 4.
