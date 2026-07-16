@@ -1,6 +1,6 @@
-# Ultra Model-Transfer Sweep — Plan (not yet executed)
+# Ultra Model-Transfer Sweep — Plan (EXECUTED / COMPLETE)
 
-**Status:** PLANNED 2026-07-09, decisions locked (3 passes; re-run 27b for a matched reference). Do not execute without a GO. Ultra-only; all models already local (no downloads).
+**Status:** COMPLETE — executed the nights of 2026-07-14 and 2026-07-15 (all 12 sweep campaigns passed first-try); see "Results — complete 5-model sweep" below. Planned 2026-07-09. The model table and "Remaining before a GO" notes below are the original pre-run planning and are superseded by the Results section.
 
 ## Goal
 Extend the machine-transfer 1v1 finding along the **model axis**: does the scalar calibration

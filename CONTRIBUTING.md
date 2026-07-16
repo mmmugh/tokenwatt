@@ -36,7 +36,7 @@ protection. Re-run `setup.sh` any time; it's idempotent.
 
 - Branch from `main` and keep changes focused — every changed line should trace to one goal.
 - Add or update tests. A good test fails when the behavior it covers breaks, not just when code is absent.
-- `uv run pytest` must pass, and CI (Python 3.10 + 3.14, plus the build / `twine check` job) must be
+- `uv run pytest` must pass, and CI (Python 3.10–3.14, plus the build / `twine check` job) must be
   green before merge.
 - Match the existing style; the codebase favors small, single-responsibility modules.
 
@@ -45,7 +45,8 @@ protection. Re-run `setup.sh` any time; it's idempotent.
 The real meter (`zeus-apple-silicon` / Apple IOReport) is **Apple Silicon only**, and it's gated by a
 platform marker so `pip install` still works elsewhere. Because the test suite uses a fake meter, you
 can develop and run tests on any platform — but **on-device validation** (real energy, real backends)
-needs an Apple Silicon Mac.
+needs an Apple Silicon Mac, and validating the **self-calibration loop** (`tokenwatt calibrate`)
+additionally needs a metering smart plug (Shelly Gen2+ RPC) for wall-energy ground truth.
 
 ## Reporting issues
 

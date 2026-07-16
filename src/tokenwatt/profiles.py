@@ -67,8 +67,10 @@ def save(profile: Profile, *, root: str | None = None) -> str:
     d = _root(root)
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, f"{profile.machine_id}__{_require_model_slug(profile.model_calibrated_on)}.json")
-    with open(path, "w") as f:
+    tmp = f"{path}.tmp"                           # write-then-rename so a reader (a live proxy) never
+    with open(tmp, "w") as f:                     # sees a half-written profile if the fit is interrupted
         json.dump(asdict(profile), f, indent=2)
+    os.replace(tmp, path)                         # atomic on POSIX
     return path
 
 

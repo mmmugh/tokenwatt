@@ -95,6 +95,60 @@ def test_render_shortens_namespaced_model_label(tmp_path):
     assert "mlx-community/" not in text                 # the long prefix is gone
 
 
+def test_render_report_calibrated_row_shows_band_and_updates_banner(tmp_path):
+    # C3: a plug-calibrated model shows its MEASURED band in the conf column, and the
+    # "ESTIMATED until you calibrate" banner is replaced once calibration is in play.
+    led = Ledger(str(tmp_path / "l.sqlite"))
+    led.insert(LedgerRow(
+        ts_start=1000.0, ts_end=1001.0, model="m1",
+        e_window_j=7_200_100.0, e_idle_j=100.0, e_marginal_j=3_600_000.0,
+        kwh_marginal=2.0, rate_usd_kwh=0.31, cost_marginal_usd=0.62,
+        tok_in=10, tok_out=1000, tok_source="backend",
+        energy_confidence="plug-calibrated (±2.7%)", calibrated=1, calib_band_pct=2.7,
+    ))
+    text = render_report(led, now=1002.0)
+    assert "±2.7%" in text                                 # measured band in the conf column
+    assert "plug-measured" in text                         # banner reflects calibration is active
+    assert "ESTIMATED until you calibrate" not in text     # the pre-calibration banner is gone
+
+
+def test_render_report_estimated_row_shows_est_tag_and_default_banner(tmp_path):
+    led = Ledger(str(tmp_path / "l.sqlite"))
+    led.insert(LedgerRow(
+        ts_start=1000.0, ts_end=1001.0, model="m1",
+        e_window_j=11.0, e_idle_j=1.0, e_marginal_j=10.0,
+        kwh_marginal=10.0 / 3.6e6, rate_usd_kwh=0.31, cost_marginal_usd=0.0001,
+        tok_in=10, tok_out=1000, tok_source="backend", energy_confidence="estimated (±15-30%)",
+    ))
+    text = render_report(led, now=1002.0)
+    assert "ESTIMATED until you calibrate" in text         # unchanged pre-calibration banner
+    m1_line = next(l for l in text.splitlines() if l.strip().startswith("m1"))
+    assert "est" in m1_line                                # per-model conf tag for an estimated model
+
+
+def test_render_report_has_conf_column_header(tmp_path):
+    assert "conf" in render_report(Ledger(str(tmp_path / "l.sqlite")), now=1002.0)
+
+
+def test_render_report_mixed_calibration_shows_mixed_conf(tmp_path):
+    # a model with BOTH a calibrated and an estimated row (e.g. recalibrated mid-history) must read
+    # 'mixed' — never overclaim the measured band across the still-estimated rows.
+    led = Ledger(str(tmp_path / "l.sqlite"))
+    led.insert(LedgerRow(
+        ts_start=1000.0, ts_end=1001.0, model="m1",
+        e_window_j=11.0, e_idle_j=1.0, e_marginal_j=10.0,
+        kwh_marginal=10.0 / 3.6e6, rate_usd_kwh=0.31, cost_marginal_usd=0.0001,
+        tok_in=10, tok_out=1000, tok_source="backend",
+        energy_confidence="plug-calibrated (±2.7%)", calibrated=1, calib_band_pct=2.7))
+    led.insert(LedgerRow(
+        ts_start=1000.0, ts_end=1001.0, model="m1",
+        e_window_j=11.0, e_idle_j=1.0, e_marginal_j=10.0,
+        kwh_marginal=10.0 / 3.6e6, rate_usd_kwh=0.31, cost_marginal_usd=0.0001,
+        tok_in=10, tok_out=1000, tok_source="backend", energy_confidence="estimated (±15-30%)"))
+    m1_line = next(l for l in render_report(led, now=1002.0).splitlines() if l.strip().startswith("m1"))
+    assert "mixed" in m1_line
+
+
 def test_render_headline_sub_floor_cost_is_honest(tmp_path):
     led = Ledger(str(tmp_path / "l.sqlite"))
     led.insert(LedgerRow(

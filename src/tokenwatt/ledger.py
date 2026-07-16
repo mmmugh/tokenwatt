@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS requests (
     kwh_marginal REAL, rate_usd_kwh REAL, cost_marginal_usd REAL,
     tok_in INTEGER, tok_out INTEGER, tok_source TEXT, energy_confidence TEXT,
     req_type TEXT DEFAULT 'text', cold INTEGER DEFAULT 0, in_flight INTEGER DEFAULT 1,
-    request_id TEXT DEFAULT ''
+    request_id TEXT DEFAULT '',
+    calibrated INTEGER DEFAULT 0, calib_band_pct REAL
 );
 CREATE TABLE IF NOT EXISTS model_loads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,6 +39,8 @@ class LedgerRow:
     cold: bool = False
     in_flight: int = 1
     request_id: str = ""
+    calibrated: int = 0                   # 1 when the cost was priced from a calibration profile (C3)
+    calib_band_pct: float | None = None   # the profile's measured band for this row; None when estimated
 
 
 class Ledger:
@@ -57,6 +60,10 @@ class Ledger:
             c.execute("ALTER TABLE requests ADD COLUMN in_flight INTEGER DEFAULT 1")
         if "request_id" not in cols:
             c.execute("ALTER TABLE requests ADD COLUMN request_id TEXT DEFAULT ''")
+        if "calibrated" not in cols:      # C3: rows priced from a calibration profile
+            c.execute("ALTER TABLE requests ADD COLUMN calibrated INTEGER DEFAULT 0")
+        if "calib_band_pct" not in cols:
+            c.execute("ALTER TABLE requests ADD COLUMN calib_band_pct REAL")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)
@@ -83,7 +90,9 @@ class Ledger:
                SUM(cost_marginal_usd)              AS total_usd,
                COALESCE(SUM(tok_out), 0)           AS total_out,
                COALESCE(SUM(tok_in), 0)            AS total_in,
-               COALESCE(SUM(e_marginal_j), 0)      AS total_marginal_j
+               COALESCE(SUM(e_marginal_j), 0)      AS total_marginal_j,
+               COALESCE(SUM(calibrated), 0)        AS n_calibrated,
+               MAX(calib_band_pct)                 AS calib_band_pct
         FROM requests GROUP BY model, req_type ORDER BY total_usd DESC
         """
         out = []

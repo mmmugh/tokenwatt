@@ -15,8 +15,8 @@ TokenWatt — electricity cost of local inference
   (numbers are ESTIMATED until you calibrate against a wall meter)
   last 24h :    119 req   0.0745 kWh   $0.0231
 
-  model           type   req      kWh        $    J/tok   $/Mtok
-  qwen3.6-27b     text   119   0.0745   $0.0231   5.019    0.432
+  model           type   req      kWh        $    J/tok   $/Mtok   conf
+  qwen3.6-27b     text   119   0.0745   $0.0231   5.019    0.432    est
 ```
 
 *Real capture: an 84-minute agentic coding session (qwen3.6-27B building a Scheme interpreter,
@@ -62,6 +62,7 @@ tokenwatt report                       # today/month $, per-model $/Mtok and J/t
 tokenwatt compare                      # your electricity vs named cloud prices, for the same tokens
 tokenwatt wrap                         # a shareable "my inference bill" card
 tokenwatt doctor                       # health-check config, proxy, upstreams, routing, ledger, meter
+tokenwatt calibrate probe|campaign|fit # replace the ±15–30% estimate with a plug-measured number (see Calibrate)
 ```
 
 A single `--upstream` shortcut works too, with no config file:
@@ -135,6 +136,32 @@ state via `/api/v0/models` vs the full `/v1/models` catalog), **routing**
   config); never touches ledger data or restarts anything.
 - Exits non-zero when something is broken, so it drops into CI / health probes.
 
+## Calibrate
+
+By default costs are **estimated (±15–30%)** — TokenWatt uses SoC rail energy as a stand-in for wall
+energy. To replace the estimate with a *measured* number, calibrate against a metering smart plug (a
+Shelly Gen2+ with an `aenergy.total` counter). Calibration is per machine **and** per model: a fit
+measured on one model doesn't transfer cleanly to another (the token slope drifts for large,
+memory-bound MoEs), so each served model gets its own profile, scoped to the exact quantization it was
+measured on.
+
+```bash
+# point at your plug with --meter-host (or set calibration.meter_host in your config)
+tokenwatt calibrate probe    --meter-host shellyplug.local        # sanity-check the plug (not a calibration)
+tokenwatt calibrate campaign --meter-host shellyplug.local \
+    --upstream http://127.0.0.1:8080 --model qwen3.6-27b          # run the Core-4 load battery, capture samples
+tokenwatt calibrate fit ~/.tokenwatt/calibration/campaign-*.json  # → ~/.tokenwatt/profiles/<machine>__<model>.json
+```
+
+The fit prints a **measured** confidence band and an honest tier: `plug-calibrated (±2.7%)` when the
+plug fit beats the estimated floor, or `uncertified (±X%) — no tighter than estimated` when it doesn't
+(an uncertified fit is *not* applied — your costs stay honestly estimated). Pass several campaign files
+taken at different `--cell-seconds` for a combined varying-duration fit that pins the per-time term.
+
+Once a certified profile exists, `serve` loads it automatically: matching requests are priced from
+measured wall energy, and `report` shows the plug band in its `conf` column. Recalibrate, then restart
+`serve` to pick up a new profile.
+
 ## What it does
 
 For each request it: forwards byte-exact to your local server (`mlx-openai-server`, `mlx-vlm`,
@@ -147,11 +174,16 @@ utility rate; and logs a per-request row — with a `request_id` that ties each 
 structured JSONL operations log.
 
 It is a *meter*, not a gateway: no API key, no rewriting, no buffering. Streaming, tool calls,
-sampling params, chat templates, and `response_format` all pass straight through.
+sampling params, chat templates, and `response_format` all pass straight through. The one endpoint it
+synthesizes rather than forwards is `GET /v1/models` — it returns the de-duplicated union of every
+upstream's models (discovery, unmetered, never a ledger row).
 
 ## Honesty
 
-- Costs read **estimated (±15–30%)** until you run the wall-meter calibration.
+- Costs read **estimated (±15–30%)** until you run the wall-meter calibration (`tokenwatt calibrate`).
+  After a **certified** plug calibration for that machine+model, its rows are priced from measured wall
+  energy and read the **plug-calibrated (±measured%)** tier; models you haven't calibrated stay
+  estimated, and an uncertified fit (no tighter than estimated) is never applied.
 - A model with no rate set shows `—`, never a fabricated `$0`; a real sub-cent cost shows `<$0.0001`,
   never a fake zero.
 - `$/Mtok` for text uses completion tokens **including** reasoning/`<think>` tokens; the cloud

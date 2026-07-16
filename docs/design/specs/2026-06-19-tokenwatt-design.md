@@ -5,6 +5,13 @@
 - **Author:** Justin Stewart (with Claude)
 - **Working name:** TokenWatt _(binds tokens ↔ watts — the core mechanic; alternatives: WattForward, SipWatt, kWhisper, Coulomb)_
 
+> **As-built status (v0.3.0):** this is the original design draft; several choices shipped differently.
+> The calibration fit is **scalar** (`a·rail + b·Δt`), not per-rail (the rails proved ~collinear);
+> profiles are keyed per-**(machine, model)**, not per-machine; the wall meter is a **Shelly smart
+> plug**, not Kasa/manual; and the **time-of-use rate model was deferred** — v0.3.0 prices at a flat
+> `$/kWh`. See `docs/design/specs/2026-06-30-tokenwatt-calibration-loop-design.md`, the
+> transfer-validation spec, and `CHANGELOG.md` for what actually shipped.
+
 A local HTTP proxy for Apple Silicon Macs that sits in front of OpenAI-compatible local
 inference servers, brackets each request with real per-rail SoC energy measurement, and
 converts it to a **wall-calibrated, time-of-use-aware electricity cost** — logged as a

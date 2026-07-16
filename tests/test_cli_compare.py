@@ -92,6 +92,44 @@ def test_wrap_card_all_unpriced_no_crash(tmp_path):
     assert "I metered my local LLM electricity with TokenWatt." in card   # generic share
 
 
+def test_wrap_card_all_calibrated_drops_the_estimated_caveat(tmp_path):
+    # C3 honesty: once every metered model is plug-calibrated, the shareable card must NOT
+    # still label its numbers "estimated (±15-30%)" — it shows the measured band instead.
+    led = Ledger(str(tmp_path / "l.sqlite"))
+    led.insert(LedgerRow(
+        ts_start=1000.0, ts_end=1001.0, model="qwen3.6-27b",
+        e_window_j=11.0, e_idle_j=1.0, e_marginal_j=10.0,
+        kwh_marginal=10.0 / 3.6e6, rate_usd_kwh=0.31, cost_marginal_usd=0.0001,
+        tok_in=100_000, tok_out=1_000, tok_source="backend",
+        energy_confidence="plug-calibrated (±2.7%)", calibrated=1, calib_band_pct=2.7,
+    ))
+    card = wrap_card(led, now=1002.0, days=30)
+    assert "plug-calibrated (±2.7%)" in card
+    assert "±15-30%" not in card                            # no false estimated caveat on calibrated numbers
+    assert "Share:" in card
+
+
+def test_wrap_card_partial_calibration_keeps_estimated_caveat(tmp_path):
+    # honesty boundary the review flagged: a model with BOTH a calibrated and an estimated row is
+    # NOT fully calibrated, so the card must keep the "estimated ±15-30%" caveat and never claim
+    # plug-calibrated. (all_cal uses n_calibrated >= requests per model.)
+    led = Ledger(str(tmp_path / "l.sqlite"))
+    led.insert(LedgerRow(
+        ts_start=1000.0, ts_end=1001.0, model="qwen3.6-27b",
+        e_window_j=11.0, e_idle_j=1.0, e_marginal_j=10.0,
+        kwh_marginal=10.0 / 3.6e6, rate_usd_kwh=0.31, cost_marginal_usd=0.0001,
+        tok_in=100_000, tok_out=1_000, tok_source="backend",
+        energy_confidence="plug-calibrated (±2.7%)", calibrated=1, calib_band_pct=2.7))
+    led.insert(LedgerRow(
+        ts_start=1000.0, ts_end=1001.0, model="qwen3.6-27b",
+        e_window_j=11.0, e_idle_j=1.0, e_marginal_j=10.0,
+        kwh_marginal=10.0 / 3.6e6, rate_usd_kwh=0.31, cost_marginal_usd=0.0001,
+        tok_in=100_000, tok_out=1_000, tok_source="backend", energy_confidence="estimated (±15-30%)"))
+    card = wrap_card(led, now=1002.0, days=30)
+    assert "±15-30%" in card                                # caveat kept — the model isn't fully calibrated
+    assert "Plug-calibrated" not in card
+
+
 def test_compare_zero_tokens_message_not_set_rate(tmp_path):
     # priced energy-only row with 0 tokens: don't misinstruct 'set --rate' (rate IS set)
     led = Ledger(str(tmp_path / "l.sqlite"))

@@ -55,8 +55,15 @@ def confidence_band_pct(residual_rel: float, run_var_rel: float, meter_accuracy_
     return 100.0 * math.sqrt(residual_rel ** 2 + run_var_rel ** 2 + (meter_accuracy_pct / 100.0) ** 2)
 
 
+def certified(meter_tier: str, band_pct: float) -> bool:
+    """True iff a metering plug produced a band tighter than the estimated floor — i.e. a
+    real calibration worth applying at runtime. Single source of truth for BOTH tier_label
+    (the human label) and the C3 runtime gate (whether to apply a profile to a live cost)."""
+    return meter_tier == "smart_plug" and band_pct < _ESTIMATED_FLOOR_PCT
+
+
 def tier_label(meter_tier: str, band_pct: float) -> str:
-    if meter_tier == "smart_plug" and band_pct < _ESTIMATED_FLOOR_PCT:
+    if certified(meter_tier, band_pct):
         return f"plug-calibrated (±{band_pct:.1f}%)"
     return f"uncertified (±{band_pct:.1f}%) — no tighter than estimated"
 

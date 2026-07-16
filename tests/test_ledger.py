@@ -118,3 +118,52 @@ def test_request_id_defaults_empty(tmp_path):
     ))
     with led._conn() as c:
         assert c.execute("SELECT request_id FROM requests").fetchone()["request_id"] == ""
+
+
+def test_calibrated_columns_roundtrip_and_default(tmp_path):
+    led = Ledger(str(tmp_path / "l.sqlite"))
+    led.insert(_row(model="m1"))                                     # default: estimated
+    led.insert(LedgerRow(
+        ts_start=100.0, ts_end=101.0, model="m1",
+        e_window_j=7_200_100.0, e_idle_j=100.0, e_marginal_j=3_600_000.0,
+        kwh_marginal=2.0, rate_usd_kwh=0.31, cost_marginal_usd=0.62,
+        tok_in=10, tok_out=1000, tok_source="backend",
+        energy_confidence="plug-calibrated (±2.7%)", calibrated=1, calib_band_pct=2.7,
+    ))
+    with led._conn() as c:
+        rows = c.execute("SELECT calibrated, calib_band_pct FROM requests ORDER BY id").fetchall()
+    assert rows[0]["calibrated"] == 0 and rows[0]["calib_band_pct"] is None    # never a fake band
+    assert rows[1]["calibrated"] == 1 and abs(rows[1]["calib_band_pct"] - 2.7) < 1e-9
+
+
+def test_by_model_surfaces_calibration_status(tmp_path):
+    led = Ledger(str(tmp_path / "l.sqlite"))
+    for _ in range(2):
+        led.insert(LedgerRow(
+            ts_start=100.0, ts_end=101.0, model="m1",
+            e_window_j=1.0, e_idle_j=0.0, e_marginal_j=1.0,
+            kwh_marginal=2.0, rate_usd_kwh=0.31, cost_marginal_usd=0.62,
+            tok_in=10, tok_out=1000, tok_source="backend",
+            energy_confidence="plug-calibrated (±2.7%)", calibrated=1, calib_band_pct=2.7))
+    r = led.by_model()[0]
+    assert r["requests"] == 2 and r["n_calibrated"] == 2               # a fully-calibrated model
+    assert abs(r["calib_band_pct"] - 2.7) < 1e-9
+    # an all-estimated model reports n_calibrated 0 and a None band (not a fake 0%)
+    led.insert(_row(model="m2"))
+    r2 = [x for x in led.by_model() if x["model"] == "m2"][0]
+    assert r2["n_calibrated"] == 0 and r2["calib_band_pct"] is None
+
+
+def test_migrate_adds_calibrated_columns_to_a_pre_c3_db(tmp_path):
+    # a ledger written before C3 has no calibration columns; opening it must add them
+    # forward-only (never drop/rewrite the existing rows).
+    import sqlite3
+    p = str(tmp_path / "old.sqlite")
+    conn = sqlite3.connect(p)
+    conn.executescript(
+        "CREATE TABLE requests (id INTEGER PRIMARY KEY AUTOINCREMENT, ts_start REAL, "
+        "model TEXT, request_id TEXT DEFAULT '');")
+    conn.close()
+    with Ledger(p)._conn() as c:
+        cols = {row["name"] for row in c.execute("PRAGMA table_info(requests)")}
+    assert "calibrated" in cols and "calib_band_pct" in cols

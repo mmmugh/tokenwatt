@@ -31,7 +31,7 @@ _DROP = {"content-length", "transfer-encoding", "connection", "host"}
 def create_app(*, router: Router, meter: EnergyMeter, idle: IdleBaseline,
                ledger: Ledger, rate: FlatRate, client: httpx.AsyncClient,
                detector: ColdStartDetector,
-               serialize_lock=None, discovery=None,
+               serialize_lock=None, discovery=None, calibrator=None,
                _label_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
                lifespan=None) -> Starlette:
 
@@ -121,8 +121,26 @@ def create_app(*, router: Router, meter: EnergyMeter, idle: IdleBaseline,
                                              load_energy_j=cold.load_energy_j,
                                              duration_ms=cold.load_time_s * 1000.0, trigger=cold.trigger)
                     marginal_j = max(0.0, marginal_j - cold.load_energy_j)
-                kwh = marginal_j / 3.6e6
+                # C3: if this (machine, model) has a certified calibration profile, convert the
+                # measured marginal RAIL energy to marginal WALL energy (a·rail + b·Δt) and carry the
+                # measured tier onto the row. Otherwise the raw rail energy stands in for wall energy
+                # — the honest ±15-30% estimate the README warns about until you calibrate.
+                # Best-effort backstop: a calibration failure must never break metering or the
+                # response (the proxy is a meter, not a gateway) — fall back to the estimate.
+                try:
+                    applied = calibrator.apply(ledger_model, marginal_j, dt) if calibrator is not None else None
+                except Exception as e:
+                    applied = None
+                    logger.warning("req.cal_failed", extra=event(request_id=label, model=ledger_model,
+                                                                 error_type=type(e).__name__, error=str(e)[:200]))
+                kwh = (applied.wall_j if applied is not None else marginal_j) / 3.6e6
                 cost = rate.price(kwh)
+                if applied is not None:
+                    energy_confidence = applied.tier
+                elif usage and usage.source != "none":
+                    energy_confidence = "estimated (±15-30%)"
+                else:
+                    energy_confidence = "energy-only"
                 ledger.insert(LedgerRow(
                     ts_start=ts_start, ts_end=time.time(), model=ledger_model, req_type=req_type,
                     e_window_j=window.total_j, e_idle_j=idle_e.total_j,
@@ -130,15 +148,17 @@ def create_app(*, router: Router, meter: EnergyMeter, idle: IdleBaseline,
                     rate_usd_kwh=rate.usd_per_kwh, cost_marginal_usd=cost,
                     tok_in=usage.input if usage else None, tok_out=usage.output if usage else None,
                     tok_source=usage.source if usage else "none",
-                    energy_confidence="estimated (±15-30%)" if usage and usage.source != "none" else "energy-only",
+                    energy_confidence=energy_confidence,
                     cold=cold.is_cold, in_flight=in_flight, request_id=label,
+                    calibrated=1 if applied is not None else 0,
+                    calib_band_pct=applied.band_pct if applied is not None else None,
                 ))
                 logger.info("req.finish", extra=event(
                     request_id=label, model=ledger_model, duration_s=round(dt, 2),
                     ttft_s=round(ttft, 2) if ttft is not None else None, status=up_resp.status_code,
                     tok_in=usage.input if usage else None, tok_out=usage.output if usage else None,
                     tok_source=usage.source if usage else "none", marginal_j=round(marginal_j, 1),
-                    kwh=kwh, cost=cost, cold=cold.is_cold,
+                    kwh=kwh, cost=cost, cold=cold.is_cold, calibrated=(applied is not None),
                     aborted=(aborted[0] if aborted else None)))
             finally:
                 if serialize_lock is not None:

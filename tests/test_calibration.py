@@ -53,6 +53,18 @@ def test_cal_scalar_is_a_pure_linear_prediction():
     assert cal.cal_scalar(1.8, 0.5, e_rail_total_j=1000.0, dt_s=300.0) == pytest.approx(1950.0)
 
 
+def test_certified_is_the_gate_shared_with_tier_label():
+    # certified() is the single source of truth for BOTH the label and the C3 runtime gate.
+    assert cal.certified("smart_plug", 5.0) is True
+    assert cal.certified("smart_plug", 22.0) is False        # band worse than the estimated floor
+    assert cal.certified("smart_plug", 15.0) is False        # floor is exclusive (>= 15 is not tighter)
+    assert cal.certified("manual", 5.0) is False             # only a metering plug certifies in C2
+    assert cal.certified("fake", 1.0) is False
+    # the two must never disagree — the label is "plug-calibrated" iff certified() is True
+    for tier, band in [("smart_plug", 5.0), ("smart_plug", 22.0), ("manual", 5.0)]:
+        assert cal.certified(tier, band) == cal.tier_label(tier, band).startswith("plug-calibrated")
+
+
 def test_fit_composes_a_consistent_fitresult_from_a_campaign():
     samples = [_sample("prefill", 1000.0, 2000.0), _sample("prefill", 1000.0, 2010.0),
                _sample("decode", 5000.0, 9000.0), _sample("decode", 5000.0, 9100.0)]

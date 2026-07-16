@@ -9,6 +9,12 @@
   and machine-readable `--json`/`--once` output — also nominally "M2" — are **separate
   sub-projects** and out of scope here.
 
+> **As-built status (v0.3.0):** stages **C0–C3 shipped** — smart-plug probe, Core-4 campaign, scalar
+> NNLS fit, per-(machine, model) profile, and **runtime application** (`serve` re-prices and re-labels
+> a calibrated model's rows). The shipped `calibrate` surface is three explicit subcommands
+> (`probe` / `campaign` / `fit`), not a single guided wizard. Deferred: the interactive wizard /
+> `calibrate show` (C4) and the per-rail upgrade (C5). See `CHANGELOG.md`.
+
 An interactive tool, `tokenwatt calibrate`, that guides a user to connect a metering smart plug
 (Shelly smart plug), runs a standardized inference workload battery across their configured
 models under sustained load, and fits a **repeatable correlation** between TokenWatt's zeus

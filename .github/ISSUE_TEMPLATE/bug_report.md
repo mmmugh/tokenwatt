@@ -12,6 +12,10 @@ labels: bug
 - Python version (`python --version`):
 - TokenWatt version (`tokenwatt --version`):
 - Backend(s) (mlx-openai-server / mlx-vlm / Ollama / LM Studio / llama.cpp):
+- Calibrated? (have you run `tokenwatt calibrate`? which smart plug, if any):
+
+**Diagnostics**
+<!-- Paste the output of `tokenwatt doctor --json` — it covers config, proxy, upstreams, routing, ledger, and the energy meter. -->
 
 **Logs (optional)**
 <!-- A snippet from ~/.tokenwatt/logs/proxy.jsonl if relevant. It contains only sizes/counts, never prompt/response content. -->

@@ -629,3 +629,147 @@ async def test_no_prompt_content_in_logs(tmp_path, fake_upstream_json):
     for h in logging.getLogger("tokenwatt").handlers:
         h.flush()
     assert SENTINEL not in open(logf).read()
+
+
+# --- C3: runtime application of a calibration profile -----------------------------------
+
+class _FakeCalibrator:
+    """Duck-typed C3 calibrator: applies wall = a·rail + b·Δt for models it knows, else None."""
+    def __init__(self, models):        # {model: (a, b, tier, band_pct)}
+        self._models = models
+
+    def apply(self, model, marginal_rail_j, dt_s):
+        spec = self._models.get(model)
+        if spec is None:
+            return None
+        from tokenwatt.calibrator import Applied
+        a, b, tier, band = spec
+        return Applied(wall_j=a * marginal_rail_j + b * dt_s, tier=tier, band_pct=band)
+
+
+async def test_calibrated_model_reprices_wall_energy_and_relabels(tmp_path, fake_upstream_json):
+    # THE C3 round trip: a request for a calibrated model must be priced from WALL energy
+    # (a·rail) and stamped with the measured tier — not the raw-rail ±15-30% estimate.
+    ledger = Ledger(str(tmp_path / "l.sqlite"))
+    meter = FakeMeter(windows={"x": EnergyByRail({"gpu": 3_600_000.0})})     # 1 kWh marginal rail (idle 0)
+    calibrator = _FakeCalibrator({"m1": (2.0, 0.0, "plug-calibrated (±2.7%)", 2.7)})   # wall = 2×rail
+    app = create_app(router=_ROUTER, meter=meter, idle=IdleBaseline(FakeMeter()),
+                     ledger=ledger, rate=FlatRate(0.31), client=_client_for(fake_upstream_json),
+                     detector=ColdStartDetector(), _label_factory=lambda: "x", calibrator=calibrator)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://tw") as c:
+        await c.post("/v1/chat/completions",
+                     json={"model": "m1", "messages": [{"role": "user", "content": "hi"}]})
+    with ledger._conn() as conn:
+        row = conn.execute("SELECT kwh_marginal, cost_marginal_usd, energy_confidence, "
+                           "calibrated, calib_band_pct FROM requests").fetchone()
+    assert abs(row["kwh_marginal"] - 2.0) < 1e-9            # 1 kWh rail -> 2 kWh wall (a=2)
+    assert abs(row["cost_marginal_usd"] - 0.62) < 1e-9      # 2 kWh × $0.31, priced from wall energy
+    assert row["energy_confidence"] == "plug-calibrated (±2.7%)"
+    assert row["calibrated"] == 1
+    assert abs(row["calib_band_pct"] - 2.7) < 1e-9
+
+
+async def test_calibrator_present_but_no_profile_stays_estimated(tmp_path, fake_upstream_json):
+    ledger = Ledger(str(tmp_path / "l.sqlite"))
+    meter = FakeMeter(windows={"x": EnergyByRail({"gpu": 3_600_000.0})})
+    calibrator = _FakeCalibrator({})                        # knows nothing about m1
+    app = create_app(router=_ROUTER, meter=meter, idle=IdleBaseline(FakeMeter()),
+                     ledger=ledger, rate=FlatRate(0.31), client=_client_for(fake_upstream_json),
+                     detector=ColdStartDetector(), _label_factory=lambda: "x", calibrator=calibrator)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://tw") as c:
+        await c.post("/v1/chat/completions",
+                     json={"model": "m1", "messages": [{"role": "user", "content": "hi"}]})
+    with ledger._conn() as conn:
+        row = conn.execute("SELECT kwh_marginal, cost_marginal_usd, energy_confidence, "
+                           "calibrated, calib_band_pct FROM requests").fetchone()
+    assert abs(row["kwh_marginal"] - 1.0) < 1e-9            # raw rail energy, unchanged
+    assert abs(row["cost_marginal_usd"] - 0.31) < 1e-9
+    assert row["energy_confidence"] == "estimated (±15-30%)"
+    assert row["calibrated"] == 0 and row["calib_band_pct"] is None
+
+
+async def test_no_calibrator_is_the_default_estimated_behavior(tmp_path, fake_upstream_json):
+    # the shipped default (no calibrator wired): rows read estimated, calibrated=0 — unchanged from v0.2
+    ledger = Ledger(str(tmp_path / "l.sqlite"))
+    meter = FakeMeter(windows={"x": EnergyByRail({"gpu": 3_600_000.0})})
+    app = create_app(router=_ROUTER, meter=meter, idle=IdleBaseline(FakeMeter()),
+                     ledger=ledger, rate=FlatRate(0.31), client=_client_for(fake_upstream_json),
+                     detector=ColdStartDetector(), _label_factory=lambda: "x")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://tw") as c:
+        await c.post("/v1/chat/completions",
+                     json={"model": "m1", "messages": [{"role": "user", "content": "hi"}]})
+    with ledger._conn() as conn:
+        row = conn.execute("SELECT energy_confidence, calibrated FROM requests").fetchone()
+    assert row["energy_confidence"] == "estimated (±15-30%)" and row["calibrated"] == 0
+
+
+async def test_corrupt_profile_does_not_break_metering(tmp_path, fake_upstream_json):
+    # Review finding: a profile that becomes unreadable while serve runs (e.g. an interrupted
+    # `calibrate fit` truncated the file) must NOT 500 a successful response or drop the ledger
+    # row — the proxy is a meter, not a gateway. It falls back to the honest estimate.
+    from tokenwatt.calibrator import Calibrator
+    proot = tmp_path / "profiles"; proot.mkdir()
+    (proot / "themachine__m1.json").write_text('{ "machine_id": "themachine",')     # truncated JSON
+    calibrator = Calibrator("themachine", root=str(proot))
+    ledger = Ledger(str(tmp_path / "l.sqlite"))
+    meter = FakeMeter(windows={"x": EnergyByRail({"gpu": 3_600_000.0})})
+    app = create_app(router=_ROUTER, meter=meter, idle=IdleBaseline(FakeMeter()),
+                     ledger=ledger, rate=FlatRate(0.31), client=_client_for(fake_upstream_json),
+                     detector=ColdStartDetector(), _label_factory=lambda: "x", calibrator=calibrator)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://tw") as c:
+        r = await c.post("/v1/chat/completions",
+                         json={"model": "m1", "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200                             # a corrupt profile does NOT 500 the response
+    with ledger._conn() as conn:
+        row = conn.execute("SELECT energy_confidence, calibrated, cost_marginal_usd FROM requests").fetchone()
+    assert row is not None                                  # the request WAS metered (row not dropped)
+    assert row["calibrated"] == 0 and row["energy_confidence"] == "estimated (±15-30%)"
+    assert abs(row["cost_marginal_usd"] - 0.31) < 1e-9      # priced as the honest estimate
+
+
+async def test_cold_request_is_still_calibrated(tmp_path, fake_upstream_slow_first_chunk):
+    # cold-start subtracts model-load energy BEFORE the calibrator runs; the inference row must
+    # still be priced from WALL energy (calibrated) and flagged cold — the two compose correctly.
+    ledger = Ledger(str(tmp_path / "l.sqlite"))
+    detector = ColdStartDetector(floor_s=0.1, factor=2.0)
+    for _ in range(3):
+        detector.observe("m1", 0.02, 100.0, 1.0)
+    meter = FakeMeter(windows={"x": EnergyByRail({"gpu": 1000.0})})
+    calibrator = _FakeCalibrator({"m1": (2.0, 0.0, "plug-calibrated (±2.7%)", 2.7)})   # wall = 2×rail
+    app = create_app(router=Router([RouteConfig(name="m1", type="text", upstream="http://up", match=["*"])]),
+                     meter=meter, idle=IdleBaseline(FakeMeter()), ledger=ledger, rate=FlatRate(0.31),
+                     client=_client_for(fake_upstream_slow_first_chunk), detector=detector,
+                     _label_factory=lambda: "x", calibrator=calibrator)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://tw") as c:
+        await c.post("/v1/chat/completions",
+                     json={"model": "m1", "stream": True, "messages": [{"role": "user", "content": "hi"}]})
+    with ledger._conn() as conn:
+        row = conn.execute("SELECT cold, calibrated, e_marginal_j, kwh_marginal FROM requests").fetchone()
+    assert row["cold"] == 1 and row["calibrated"] == 1                     # cold AND calibrated
+    assert abs(row["kwh_marginal"] - (2.0 * row["e_marginal_j"] / 3.6e6)) < 1e-12   # wall = 2×(post-load rail)
+
+
+async def test_calibrated_but_no_rate_has_energy_but_no_cost(tmp_path, fake_upstream_json):
+    # calibrated ENERGY is real (kwh from wall), but with no rate the cost stays None — never a
+    # fabricated $0 — and the tier still reads plug-calibrated.
+    ledger = Ledger(str(tmp_path / "l.sqlite"))
+    meter = FakeMeter(windows={"x": EnergyByRail({"gpu": 3_600_000.0})})
+    calibrator = _FakeCalibrator({"m1": (2.0, 0.0, "plug-calibrated (±2.7%)", 2.7)})
+    app = create_app(router=_ROUTER, meter=meter, idle=IdleBaseline(FakeMeter()),
+                     ledger=ledger, rate=FlatRate(None), client=_client_for(fake_upstream_json),
+                     detector=ColdStartDetector(), _label_factory=lambda: "x", calibrator=calibrator)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://tw") as c:
+        await c.post("/v1/chat/completions",
+                     json={"model": "m1", "messages": [{"role": "user", "content": "hi"}]})
+    with ledger._conn() as conn:
+        row = conn.execute("SELECT kwh_marginal, cost_marginal_usd, energy_confidence, "
+                           "calibrated FROM requests").fetchone()
+    assert abs(row["kwh_marginal"] - 2.0) < 1e-9           # real calibrated wall energy
+    assert row["cost_marginal_usd"] is None                # no rate -> no fabricated cost
+    assert row["energy_confidence"] == "plug-calibrated (±2.7%)" and row["calibrated"] == 1

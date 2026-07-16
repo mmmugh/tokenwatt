@@ -67,12 +67,27 @@ def _pmtok(v: float | None) -> str:
     return "<0.001" if 0 < v < 0.001 else f"{v:.3f}"
 
 
+def _conf_tag(requests: int, n_calibrated: int, band_pct: float | None) -> str:
+    """Per-model confidence tag: the MEASURED band when the model is fully plug-calibrated,
+    'est' when it's all estimated, 'mixed' when a recalibration split its rows."""
+    if not n_calibrated:
+        return "est"
+    if n_calibrated >= requests and band_pct is not None:
+        return f"±{band_pct:.1f}%"
+    return "mixed"
+
+
 def render_report(ledger: Ledger, now: float) -> str:
     day = ledger.totals(now - 86_400)
     month = ledger.totals(now - 30 * 86_400)
+    rows = ledger.by_model()
+    any_cal = any(r["n_calibrated"] for r in rows)
+    banner = ("  (calibrated rows are plug-measured; uncalibrated read ESTIMATED ±15-30%)"
+              if any_cal else
+              "  (numbers are ESTIMATED until you calibrate against a wall meter)")
     lines = [
         "TokenWatt — electricity cost of local inference",
-        "  (numbers are ESTIMATED until you calibrate against a wall meter)",
+        banner,
         f"  last 24h : {day['requests']:>6} req   {_kwh(day['kwh'])} kWh   {_usd(day['usd'])}",
         f"  last 30d : {month['requests']:>6} req   {_kwh(month['kwh'])} kWh   {_usd(month['usd'])}",
     ]
@@ -81,14 +96,15 @@ def render_report(ledger: Ledger, now: float) -> str:
         lines.append(f"  model loads: {_ml['count']} (booked separately: {_ml['total_load_j'] / 3.6e6 * 1000:.3f} Wh)")
     lines += [
         "",
-        f"  {'model':<30}{'type':>11}{'req':>6}{'kWh':>12}{'$':>10}{'J/tok':>10}{'$/Mtok':>10}",
+        f"  {'model':<30}{'type':>11}{'req':>6}{'kWh':>12}{'$':>10}{'J/tok':>10}{'$/Mtok':>10}{'conf':>12}",
     ]
-    for r in ledger.by_model():
+    for r in rows:
         jpt = f"{r['j_per_token']:.3f}" if r["j_per_token"] is not None else "-"
         pm = _pmtok(r["usd_per_mtok"])
+        conf = _conf_tag(r["requests"], r["n_calibrated"], r["calib_band_pct"])
         lines.append(
             f"  {_model_label(r['model']):<30}{r['req_type']:>11}{r['requests']:>6}{_kwh(r['total_kwh']):>12}"
-            f"{_usd(r['total_usd']):>10}{jpt:>10}{pm:>10}"
+            f"{_usd(r['total_usd']):>10}{jpt:>10}{pm:>10}{conf:>12}"
         )
     return "\n".join(lines)
 
@@ -341,6 +357,18 @@ def serve(
             await client.aclose()
 
     router = Router(cfg.routes)
+    # C3: load this machine's calibration profiles so calibrated models are priced from measured
+    # WALL energy. Best-effort: detect_machine needs Apple Silicon; on failure or with no profiles,
+    # costs read estimated (unchanged). Cached per model — recalibrate, then restart to apply.
+    calibrator = None
+    cal_models: list[str] = []
+    try:
+        from tokenwatt.machineid import detect_machine
+        from tokenwatt.calibrator import Calibrator
+        calibrator = Calibrator(detect_machine().machine_id)
+        cal_models = calibrator.available_models()
+    except Exception:
+        calibrator = None
     discovery = None
     if cfg.discovery.enabled:
         from tokenwatt.discovery import Discovery
@@ -350,12 +378,14 @@ def serve(
     app_asgi = create_app(router=router, meter=meter, idle=idle, ledger=led,
                           rate=FlatRate(cfg.rate.flat_usd_per_kwh), client=client,
                           detector=detector, serialize_lock=inference_lock,
-                          discovery=discovery, lifespan=lifespan)
+                          discovery=discovery, calibrator=calibrator, lifespan=lifespan)
 
     routes_desc = ", ".join(f"{r.name}->{r.upstream}" for r in cfg.routes) or "(none)"
     mode = "serialized" if cfg.serialize_inference else "concurrent"
     routing = "discover+static" if cfg.discovery.enabled else "static"
-    typer.echo(f"TokenWatt proxy on http://{eff_host}:{eff_port}  routes: {routes_desc}  ({mode}, {routing}, no sudo)")
+    cal_desc = f"calibrated:{len(cal_models)}" if cal_models else "estimated"
+    typer.echo(f"TokenWatt proxy on http://{eff_host}:{eff_port}  routes: {routes_desc}  "
+               f"({mode}, {routing}, {cal_desc}, no sudo)")
     uvicorn.run(app_asgi, host=eff_host, port=eff_port, log_level="warning")
 
 
@@ -419,6 +449,14 @@ def wrap_card(ledger: Ledger, now: float, days: int = 30) -> str:
         if r["usd_per_mtok"] is not None:
             lines.append(f"- {_model_label(r['model'])} ({r['req_type']}): "
                          f"${_pmtok(r['usd_per_mtok'])}/Mtok output · {r['requests']} req")
+    # Once every metered model is plug-calibrated, the card must stop calling its numbers
+    # "estimated (±15-30%)" — that would be a fresh dishonesty (C3). Mixed/estimated cards
+    # keep the caveat.
+    all_cal = bool(rows) and all(r["n_calibrated"] >= r["requests"] for r in rows)
+    bands = [r["calib_band_pct"] for r in rows if r["calib_band_pct"] is not None]
+    band_txt = f"±{max(bands):.1f}%" if (all_cal and bands) else None
+    acc_short = f"Plug-calibrated {band_txt}." if band_txt else "Estimated ±15-30% pre-calibration."
+
     share = "I metered my local LLM electricity with TokenWatt."
     c = cloud.compare_total(local_total, tot_in, tot_out)
     if c is not None:
@@ -426,15 +464,16 @@ def wrap_card(ledger: Ledger, now: float, days: int = 30) -> str:
         if c["ratio"] >= _GATE:
             share = (f"{days} days of local inference: {t['requests']} requests, {_usd(local_total)} of electricity. "
                      f"The same tokens would list at ~{_usd(c['cloud_usd'])} on {c['cloud']} (~{c['ratio']:.1f}×). "
-                     f"Estimated ±15-30% pre-calibration. via TokenWatt")
-    lines += [
-        "",
-        "_electricity estimated (±15-30%), pre wall-meter calibration; cloud = dated list price "
-        "(incl. their compute + margin, not just power). $/Mtok output uses completion tokens "
-        "incl. reasoning/<think>._",
-        "",
-        f"Share: {share}",
-    ]
+                     f"{acc_short} via TokenWatt")
+    if band_txt:
+        caveat = (f"_electricity plug-calibrated ({band_txt}); cloud = dated list price "
+                  "(incl. their compute + margin, not just power). $/Mtok output uses completion "
+                  "tokens incl. reasoning/<think>._")
+    else:
+        caveat = ("_electricity estimated (±15-30%), pre wall-meter calibration; cloud = dated list "
+                  "price (incl. their compute + margin, not just power). $/Mtok output uses completion "
+                  "tokens incl. reasoning/<think>._")
+    lines += ["", caveat, "", f"Share: {share}"]
     return "\n".join(lines)
 
 
