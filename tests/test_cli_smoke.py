@@ -80,8 +80,9 @@ import json as _json
 def test_calibrate_fit_writes_a_profile_from_a_campaign(tmp_path, monkeypatch):
     # a minimal campaign whose slope is obviously ~2.0
     campaign = {
-        "schema_version": 1, "timestamp": 0.0, "model": "qwen3.6-27b",
+        "schema_version": 2, "timestamp": 0.0, "model": "qwen3.6-27b",
         "meter": {"name": "shelly-plug", "tier": "smart_plug", "accuracy_pct": 1.0},
+        "quantization": {"bits": 8, "group_size": 64, "mode": "affine", "mixed": False},
         "cell_seconds": 300.0, "passes": 2,
         "idle": {"rail_w": {"gpu": 0.1}, "wall_w": 7.0, "dt_s": 300.0},
         "samples": [
@@ -117,6 +118,7 @@ def test_calibrate_fit_writes_a_profile_from_a_campaign(tmp_path, monkeypatch):
     assert prof["fit_type"] == "scalar"
     assert 1.8 <= prof["coefficients"]["a"] <= 2.2      # slope recovered
     assert prof["model_calibrated_on"] == "qwen3.6-27b"
+    assert prof["quantization"] == {"bits": 8, "group_size": 64, "mode": "affine", "mixed": False}
 
 
 def test_calibrate_fit_unnamed_model_fails_loud_not_traceback(tmp_path, monkeypatch):
@@ -155,6 +157,21 @@ def test_calibrate_fit_unnamed_model_fails_loud_not_traceback(tmp_path, monkeypa
     assert res.exit_code == 1
     assert "cannot save" in res.output.lower()                    # clean diagnosis...
     assert res.exception is None or isinstance(res.exception, SystemExit)   # ...not a raw traceback
+
+
+def test_calibrate_campaign_detects_and_passes_quantization(monkeypatch):
+    # the CLI must auto-detect the served model's quantization and hand it to run_campaign
+    # so the power-run record carries it (Rule 13: exercised from the command entry point).
+    captured = {}
+    monkeypatch.setattr("tokenwatt.campaign.read_quantization",
+                        lambda m, **k: {"bits": 4, "group_size": 64, "mode": "affine", "mixed": False})
+    def fake_run(**kw):
+        captured.update(kw)
+        return None, "meter unreachable: fake"   # short-circuit before any real metering
+    monkeypatch.setattr("tokenwatt.campaign.run_campaign", fake_run)
+    runner.invoke(app, ["calibrate", "campaign", "--meter-host", "h",
+                        "--upstream", "http://x", "--model", "some/model-4bit"])
+    assert captured.get("quantization") == {"bits": 4, "group_size": 64, "mode": "affine", "mixed": False}
 
 
 def test_calibrate_fit_missing_campaign_file_fails_loud(tmp_path):

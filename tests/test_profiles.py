@@ -113,6 +113,29 @@ def test_load_unnamed_model_ignores_legacy_file(tmp_path):
     assert load(p.machine_id, "?", root=str(tmp_path)) is None
 
 
+def test_profile_carries_quantization(tmp_path):
+    # the fitted profile records the served model's quantization and round-trips it
+    p = profile_from(_fit(), _machine(),
+                     meter={"name": "shelly-plug", "tier": "smart_plug", "accuracy_pct": 1.0},
+                     model_calibrated_on="qwen3.6-27b", created_at=1_700_000_000.0,
+                     quantization={"bits": 8, "group_size": 64, "mode": "affine", "mixed": False})
+    assert p.quantization == {"bits": 8, "group_size": 64, "mode": "affine", "mixed": False}
+    save(p, root=str(tmp_path))
+    got = load(p.machine_id, "qwen3.6-27b", root=str(tmp_path))
+    assert got.quantization == {"bits": 8, "group_size": 64, "mode": "affine", "mixed": False}
+
+
+def test_profile_without_quantization_defaults_to_none(tmp_path):
+    # a profile built/written before quantization existed loads with None, not a fabricated value
+    from dataclasses import asdict
+    p = _profile("qwen3.6-27b")                        # profile_from with no quantization
+    assert p.quantization is None
+    d = asdict(p); d.pop("quantization")               # simulate a pre-quant profile file
+    open(os.path.join(tmp_path, f"{p.machine_id}__qwen3-6-27b.json"), "w").write(json.dumps(d))
+    got = load(p.machine_id, "qwen3.6-27b", root=str(tmp_path))
+    assert got is not None and got.quantization is None
+
+
 def test_list_profiles_returns_legacy_schema1_profile(tmp_path):
     # list_profiles routes through _read, which accepts schema 1 and 2, so a legacy
     # single-model "<machine>.json" (schema 1) is still surfaced, not dropped.

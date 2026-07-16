@@ -315,6 +315,42 @@ def test_run_campaign_threads_battery_into_samples():
     assert result.idle.battery_abs_w == pytest.approx(4.0)
 
 
+def test_run_campaign_records_quantization():
+    # model quantization is a first-class covariate of a power run — it must be captured
+    # in the record (the model name alone doesn't carry it, e.g. a local path), and the
+    # schema bumps to 2 to mark the new field.
+    clk = _Clock()
+    result, _ = campaign.run_campaign(
+        cells=_cells(), model="m1",
+        load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
+        make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
+        make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        make_battery=lambda: FakeBatterySource([None]),
+        host="h", cell_seconds=4.0, passes=1, timestamp=0.0,
+        quantization={"bits": 4, "group_size": 64, "mode": "affine", "mixed": False},
+        sleep=clk.sleep, monotonic=clk.monotonic)
+    assert result is not None
+    assert result.quantization == {"bits": 4, "group_size": 64, "mode": "affine", "mixed": False}
+    doc = campaign.campaign_to_dict(result)
+    assert doc["quantization"] == {"bits": 4, "group_size": 64, "mode": "affine", "mixed": False}
+    assert doc["schema_version"] == 2
+
+
+def test_run_campaign_quantization_defaults_to_none():
+    # omitting it records None (honest unknown), never a fabricated value
+    clk = _Clock()
+    result, _ = campaign.run_campaign(
+        cells=_cells(), model="m1",
+        load=FakeLoadClient(tok_in=5, tok_out=9, latency_s=2.0, clock=clk),
+        make_meter=lambda: FakeMeter(cumulative_step=EnergyByRail({"cpu_total": 10.0})),
+        make_source=lambda *_a, **_k: FakeMeterSource([100.0 + 0.01 * i for i in range(50)]),
+        make_battery=lambda: FakeBatterySource([None]),
+        host="h", cell_seconds=4.0, passes=1, timestamp=0.0,
+        sleep=clk.sleep, monotonic=clk.monotonic)
+    assert result is not None and result.quantization is None
+    assert campaign.campaign_to_dict(result)["quantization"] is None
+
+
 def test_run_campaign_aborts_loud_when_meter_source_unreachable():
     def _dead_source(*_a, **_k):
         s = FakeMeterSource([1.0])

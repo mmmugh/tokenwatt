@@ -1,6 +1,7 @@
 # src/tokenwatt/campaign.py
 from __future__ import annotations
 
+import glob
 import json
 import os
 import time
@@ -11,6 +12,46 @@ from typing import Callable
 from tokenwatt.battery import ChatResult, LoadCell, LoadClient
 from tokenwatt.meter import EnergyByRail, EnergyMeter
 from tokenwatt.metersource import MeterSource
+
+
+def _find_config(model: str, hf_home: str | None = None) -> str | None:
+    """Locate an mlx model's config.json from a served id or local path: a local dir
+    holds it directly; an HF repo id resolves to <hub>/models--{org}--{name}/snapshots/*/."""
+    local = os.path.expanduser(model)
+    if os.path.isdir(local):
+        cfg = os.path.join(local, "config.json")
+        return cfg if os.path.isfile(cfg) else None
+    if hf_home:
+        hub = os.path.join(os.path.expanduser(hf_home), "hub")
+    elif os.environ.get("HF_HUB_CACHE"):
+        hub = os.path.expanduser(os.environ["HF_HUB_CACHE"])
+    elif os.environ.get("HF_HOME"):
+        hub = os.path.join(os.path.expanduser(os.environ["HF_HOME"]), "hub")
+    else:
+        hub = os.path.expanduser("~/.cache/huggingface/hub")
+    safe = "models--" + model.replace("/", "--")
+    hits = sorted(glob.glob(os.path.join(hub, safe, "snapshots", "*", "config.json")))
+    return hits[0] if hits else None
+
+
+def read_quantization(model: str, *, hf_home: str | None = None) -> dict | None:
+    """Best-effort read of an mlx model's quantization from its config.json, keyed by the
+    served model id or local path. Returns {bits, group_size, mode, mixed} for a quantized
+    model, {'bits': None, ... 'mode': 'none'} for a full-precision one, or None when the
+    config can't be located — an honest 'unknown', never a fabricated value. `mixed` is True
+    when the config carries per-layer overrides (mixed-precision quantization)."""
+    cfg = _find_config(model, hf_home)
+    if cfg is None:
+        return None
+    try:
+        with open(cfg) as f:
+            q = json.load(f).get("quantization")
+    except Exception:
+        return None
+    if not isinstance(q, dict):
+        return {"bits": None, "group_size": None, "mode": "none", "mixed": False}
+    return {"bits": q.get("bits"), "group_size": q.get("group_size"),
+            "mode": q.get("mode"), "mixed": any(isinstance(v, dict) for v in q.values())}
 
 
 @dataclass
@@ -239,7 +280,7 @@ def run_cell(meter: EnergyMeter, source: MeterSource, load_fn: Callable[[], Chat
                       requests=requests, battery_abs_w=probe.max)
 
 
-_CAMPAIGN_SCHEMA = 1
+_CAMPAIGN_SCHEMA = 2      # v2 adds `quantization`; v1 records lack it (read back as None)
 
 
 @dataclass
@@ -254,6 +295,7 @@ class CampaignResult:
     samples: list[CellSample]
     schema_version: int
     timestamp: float
+    quantization: dict | None = None   # {bits, group_size, mode, mixed} of the served model; None = unknown
 
 
 def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
@@ -262,6 +304,7 @@ def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
                  host: str, switch_id: int = 0,
                  password: str | None = None, cell_seconds: float = 300.0, passes: int = 2,
                  timestamp: float, idle_seconds: float | None = None,
+                 quantization: dict | None = None,
                  on_progress=lambda _m: None,
                  sleep=time.sleep, monotonic=time.monotonic) -> tuple["CampaignResult | None", str]:
     """Preflight, measure idle, then run each (cell × pass) as a sustained-load
@@ -295,7 +338,8 @@ def run_campaign(*, cells: list[LoadCell], model: str, load: LoadClient,
     result = CampaignResult(
         model=model, meter_name=source.name, meter_tier=source.tier,
         meter_accuracy_pct=source.accuracy_pct, cell_seconds=cell_seconds, passes=passes,
-        idle=idle, samples=samples, schema_version=_CAMPAIGN_SCHEMA, timestamp=timestamp)
+        idle=idle, samples=samples, schema_version=_CAMPAIGN_SCHEMA, timestamp=timestamp,
+        quantization=quantization)
     return result, f"{len(samples)} samples over {passes} pass(es)"
 
 
@@ -306,6 +350,7 @@ def campaign_to_dict(result: CampaignResult) -> dict:
         "model": result.model,
         "meter": {"name": result.meter_name, "tier": result.meter_tier,
                   "accuracy_pct": result.meter_accuracy_pct},
+        "quantization": result.quantization,
         "cell_seconds": result.cell_seconds,
         "passes": result.passes,
         "idle": asdict(result.idle),

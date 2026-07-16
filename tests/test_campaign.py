@@ -1,9 +1,55 @@
 # tests/test_campaign.py
 import pytest
 
+import json as _json
+import os as _os
+
 from tokenwatt.meter import FakeMeter, EnergyByRail
 from tokenwatt.metersource import FakeMeterSource
 from tokenwatt import campaign
+
+
+def _write_cfg(dirpath, quant):
+    _os.makedirs(dirpath, exist_ok=True)
+    doc = {"model_type": "x"}
+    if quant is not None:
+        doc["quantization"] = quant
+    with open(_os.path.join(dirpath, "config.json"), "w") as f:
+        _json.dump(doc, f)
+
+
+def test_read_quantization_from_local_path(tmp_path):
+    d = str(tmp_path / "mymodel")
+    _write_cfg(d, {"group_size": 64, "bits": 4, "mode": "affine"})
+    assert campaign.read_quantization(d) == {"bits": 4, "group_size": 64, "mode": "affine", "mixed": False}
+
+
+def test_read_quantization_flags_mixed_precision(tmp_path):
+    # a config with per-layer overrides (dict values) is mixed precision — the record must say so
+    d = str(tmp_path / "mixed")
+    _write_cfg(d, {"group_size": 32, "bits": 4, "mode": "mxfp4",
+                   "model.layers.0.self_attn.q_proj": {"bits": 8, "mode": "affine"}})
+    q = campaign.read_quantization(d)
+    assert q["bits"] == 4 and q["mode"] == "mxfp4" and q["mixed"] is True
+
+
+def test_read_quantization_from_hf_cache(tmp_path):
+    # emulate the HF hub layout: <hub>/models--{org}--{name}/snapshots/<hash>/config.json
+    snap = str(tmp_path / "hub" / "models--mlx-community--Foo-8bit" / "snapshots" / "abc")
+    _write_cfg(snap, {"group_size": 64, "bits": 8, "mode": "affine"})
+    q = campaign.read_quantization("mlx-community/Foo-8bit", hf_home=str(tmp_path))
+    assert q == {"bits": 8, "group_size": 64, "mode": "affine", "mixed": False}
+
+
+def test_read_quantization_none_when_config_missing(tmp_path):
+    # honest "unknown" (None), never a fabricated value, when nothing resolves
+    assert campaign.read_quantization("mlx-community/Nope", hf_home=str(tmp_path)) is None
+
+
+def test_read_quantization_full_precision_when_no_quant_block(tmp_path):
+    d = str(tmp_path / "fp")
+    _write_cfg(d, None)   # config present but no quantization key = full precision, not unknown
+    assert campaign.read_quantization(d) == {"bits": None, "group_size": None, "mode": "none", "mixed": False}
 
 
 class _Clock:

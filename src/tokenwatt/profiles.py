@@ -47,18 +47,20 @@ class Profile:
     macos: str
     created_at: float
     n_excluded: int | None = None    # battery-contaminated cells dropped; None = provenance unknown (pre-M5 file)
+    quantization: dict | None = None # {bits, group_size, mode, mixed} of the calibrated model; None = unknown
     schema_version: int = _PROFILE_SCHEMA
 
 
 def profile_from(fit: FitResult, machine: MachineInfo, meter: dict, *,
-                 model_calibrated_on: str, created_at: float) -> Profile:
+                 model_calibrated_on: str, created_at: float,
+                 quantization: dict | None = None) -> Profile:
     return Profile(
         machine_id=machine.machine_id, label=machine.label, fit_type=fit.fit_type,
         coefficients={"a": fit.a, "b": fit.b}, residual_rel=fit.residual_rel,
         run_variance_rel=fit.run_variance_rel, band_pct=fit.band_pct, tier=fit.tier,
         meter=meter, n_samples=fit.n_samples, n_passes=fit.n_passes,
         model_calibrated_on=model_calibrated_on, macos=machine.macos_major,
-        created_at=created_at, n_excluded=fit.n_excluded)
+        created_at=created_at, n_excluded=fit.n_excluded, quantization=quantization)
 
 
 def save(profile: Profile, *, root: str | None = None) -> str:

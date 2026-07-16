@@ -170,12 +170,13 @@ def calibrate_campaign(
 
     ts = _time.time()
     out_path = out or os.path.expanduser(f"~/.tokenwatt/calibration/campaign-{int(ts)}.json")
+    quant = campaign.read_quantization(model)      # best-effort from the model's config.json; None if unknown
     load = HttpLoadClient(upstream)
     try:
         result, msg = campaign.run_campaign(
             cells=text_cells(), model=model, load=load, host=host, switch_id=sid,
             password=password, cell_seconds=cell_seconds, idle_seconds=idle_seconds,
-            passes=passes, timestamp=ts, on_progress=typer.echo)
+            passes=passes, timestamp=ts, quantization=quant, on_progress=typer.echo)
     finally:
         load.close()
     typer.echo(msg, err=(result is None))
@@ -240,7 +241,8 @@ def calibrate_fit(
 
     try:
         profile = profiles.profile_from(result, machine, meter,
-                                        model_calibrated_on=camp.get("model", "?"), created_at=_time.time())
+                                        model_calibrated_on=camp.get("model", "?"), created_at=_time.time(),
+                                        quantization=camp.get("quantization"))
         saved = profiles.save(profile, root=out)
     except ValueError as e:                        # e.g. an unnamed model can't be keyed — fail loud
         typer.echo(f"cannot save profile: {e}", err=True)
