@@ -19,3 +19,7 @@ venv/
 
 # macOS
 .DS_Store
+
+# Article drafts + workflow spec scaffolding — kept local, not shipped in the repo
+docs/articles/
+docs/superpowers/
