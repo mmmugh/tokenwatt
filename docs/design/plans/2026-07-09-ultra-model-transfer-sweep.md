@@ -67,16 +67,21 @@ Remaining before a GO is just the run-time **verify-at-start** gates above (gpt-
 
 ## Results — complete 5-model sweep (M3 Ultra, plug-calibrated)
 
-Night 1 (2026-07-14): 4B ref + 27b re-run + 35b-a3b. Night 2 (2026-07-15): Coder-Next + gpt-oss.
-Each fit is `calibrate fit d120 d360 d720` (fit_combined), 27 samples; all 30 campaigns passed first-try.
+Night 1 (2026-07-14): 27b re-run + 35b-a3b. Night 2 (2026-07-15): Coder-Next + gpt-oss. Each sweep fit
+is `calibrate fit d120 d360 d720` (fit_combined), 27 samples; all 12 sweep campaigns (both nights) passed
+first-try. The 4B row is the earlier 5-duration 1v1 reference. Quant is the config-authoritative value now
+recorded in every power-run record + profile (model names undersell it—see `read_quantization`).
 
-| Model | Type | ~GB | `a` (rail→wall) | `b` (W per load-second) | Band |
-|---|---|---|---|---|---|
-| Qwen3.5-4B-4bit | small dense | 2.5 | 1.551 | 15.81 | ±2.6% |
-| qwen3.6-27b-8bit | mid dense | 27 | 1.572 | 17.82 | ±2.8% |
-| qwen3.6-35b-a3b (thinking) | mid MoE | 35 | 1.561 | 20.62 | ±3.7% |
-| Qwen3-Coder-Next-6bit | large MoE | 60 | 1.506 | 21.61 | ±4.5% |
-| gpt-oss-120b-MXFP4-Q8 | huge MoE | 59 | 1.476 | 21.15 | ±2.7% |
+| Model | Type | ~GB | Quant | `a` (rail→wall) | `b` (W per load-second) | Band |
+|---|---|---|---|---|---|---|
+| Qwen3.5-4B-4bit | small dense | 2.5 | 4-bit affine | 1.551 | 15.81 | ±2.6% |
+| qwen3.6-27b-8bit | mid dense | 27 | 8-bit affine | 1.572 | 17.82 | ±2.8% |
+| qwen3.6-35b-a3b (thinking) | mid MoE | 35 | 8-bit mixed | 1.561 | 20.62 | ±3.7% |
+| Qwen3-Coder-Next-6bit | large MoE | 60 | 6-bit mixed | 1.506 | 21.61 | ±4.5% |
+| gpt-oss-120b-MXFP4-Q8 | huge MoE | 59 | 4-bit mxfp4 mixed | 1.476 | 21.15 | ±2.7% |
+
+Note `a` does not track quant simply: gpt-oss and 4B are both 4-bit yet have the most-different `a`
+(1.476 vs 1.551), so the `a` drift is about size / memory-boundness, not bit-width.
 
 **Verdict (full):**
 - **`b` grows with memory footprint, then SATURATES.** 15.8→17.8→20.6, then a plateau at ~21–22 W for
