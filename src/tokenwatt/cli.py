@@ -239,10 +239,12 @@ def calibrate_fit(
         except Exception as e:
             typer.echo(f"(note: could not read device identity from {meter_host}: {type(e).__name__})", err=True)
 
+    quants = [c.get("quantization") for c in camps]
+    quant = quants[0] if all(q == quants[0] for q in quants) else None   # honest None if they disagree
     try:
         profile = profiles.profile_from(result, machine, meter,
                                         model_calibrated_on=camp.get("model", "?"), created_at=_time.time(),
-                                        quantization=camp.get("quantization"))
+                                        quantization=quant)
         saved = profiles.save(profile, root=out)
     except ValueError as e:                        # e.g. an unnamed model can't be keyed — fail loud
         typer.echo(f"cannot save profile: {e}", err=True)

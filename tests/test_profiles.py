@@ -113,6 +113,19 @@ def test_load_unnamed_model_ignores_legacy_file(tmp_path):
     assert load(p.machine_id, "?", root=str(tmp_path)) is None
 
 
+def test_profile_schema_bumped_to_3_and_schema_2_still_loads(tmp_path):
+    # adding quantization bumps the profile schema to 3 so old code reading a new file fails loud
+    # ('unknown schema') rather than a raw TypeError; schema-2 files still load (back-compat).
+    from dataclasses import asdict
+    p = _profile("qwen3.6-27b")
+    d = asdict(p)
+    assert d["schema_version"] == 3
+    d2 = dict(d); d2["schema_version"] = 2; d2.pop("quantization")   # a pre-quantization schema-2 file
+    open(os.path.join(tmp_path, f"{p.machine_id}__qwen3-6-27b.json"), "w").write(json.dumps(d2))
+    got = load(p.machine_id, "qwen3.6-27b", root=str(tmp_path))
+    assert got is not None and got.quantization is None
+
+
 def test_profile_carries_quantization(tmp_path):
     # the fitted profile records the served model's quantization and round-trips it
     p = profile_from(_fit(), _machine(),

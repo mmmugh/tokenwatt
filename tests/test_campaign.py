@@ -52,6 +52,61 @@ def test_read_quantization_full_precision_when_no_quant_block(tmp_path):
     assert campaign.read_quantization(d) == {"bits": None, "group_size": None, "mode": "none", "mixed": False}
 
 
+def test_read_quantization_uses_refs_main_not_arbitrary_snapshot(tmp_path):
+    # with >1 cached revision, must resolve the SERVED revision via refs/main — never sorted()[0],
+    # which orders by random commit hash and would silently record a stale revision's quant.
+    repo = tmp_path / "hub" / "models--org--M"
+    _write_cfg(str(repo / "snapshots" / "aaaa"), {"group_size": 64, "bits": 8, "mode": "affine"})  # stale
+    _write_cfg(str(repo / "snapshots" / "zzzz"), {"group_size": 32, "bits": 4, "mode": "mxfp4"})    # served
+    (repo / "refs").mkdir(parents=True, exist_ok=True)
+    (repo / "refs" / "main").write_text("zzzz")
+    q = campaign.read_quantization("org/M", hf_home=str(tmp_path))
+    assert q["bits"] == 4 and q["mode"] == "mxfp4"          # refs/main, not sorted()[0]==aaaa
+
+
+def test_read_quantization_multiple_snapshots_without_ref_is_unknown(tmp_path):
+    # can't disambiguate honestly across revisions -> None, never a guessed quant
+    repo = tmp_path / "hub" / "models--org--M"
+    _write_cfg(str(repo / "snapshots" / "aaaa"), {"group_size": 64, "bits": 8, "mode": "affine"})
+    _write_cfg(str(repo / "snapshots" / "bbbb"), {"group_size": 32, "bits": 4, "mode": "mxfp4"})
+    assert campaign.read_quantization("org/M", hf_home=str(tmp_path)) is None
+
+
+def test_read_quantization_honors_legacy_and_xdg_cache_envs(tmp_path, monkeypatch):
+    # the still-common HUGGINGFACE_HUB_CACHE (legacy) must resolve, else auto-detect silently no-ops
+    for v in ("HF_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))
+    _write_cfg(str(tmp_path / "hub" / "models--org--M" / "snapshots" / "h"),
+               {"group_size": 64, "bits": 6, "mode": "affine"})
+    assert campaign.read_quantization("org/M")["bits"] == 6
+
+
+def test_read_quantization_present_but_non_dict_is_unknown_not_full_precision(tmp_path):
+    # an unrecognized/explicit-null quantization value is UNKNOWN (None) — never an affirmative
+    # "full precision" claim for a model whose config says it IS quantized
+    import json as _j
+    for val in ("int4", 4, None, True):
+        d = tmp_path / f"m-{val}"
+        d.mkdir()
+        _j.dump({"model_type": "x", "quantization": val}, open(d / "config.json", "w"))
+        assert campaign.read_quantization(str(d)) is None, f"val={val!r}"
+
+
+def test_read_quantization_corrupt_config_returns_none(tmp_path):
+    d = tmp_path / "corrupt"
+    d.mkdir()
+    (d / "config.json").write_text("{ not valid json")
+    assert campaign.read_quantization(str(d)) is None       # exception-safe, no crash
+
+
+def test_read_quantization_mixed_flags_dotted_layer_override(tmp_path):
+    # a per-layer override keyed by a dotted module path flags mixed even when its value isn't a dict
+    d = str(tmp_path / "dotted")
+    _write_cfg(d, {"group_size": 32, "bits": 4, "mode": "mxfp4", "model.layers.0.mlp": False})
+    assert campaign.read_quantization(d)["mixed"] is True
+
+
 class _Clock:
     """Deterministic clock: sleep() advances virtual time; monotonic() reads it."""
     def __init__(self) -> None:

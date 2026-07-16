@@ -159,6 +159,31 @@ def test_calibrate_fit_unnamed_model_fails_loud_not_traceback(tmp_path, monkeypa
     assert res.exception is None or isinstance(res.exception, SystemExit)   # ...not a raw traceback
 
 
+def test_calibrate_fit_records_no_quant_when_campaigns_disagree(tmp_path, monkeypatch):
+    # a fit_combined over campaigns whose quantization DIFFERS must not silently stamp one
+    # onto the profile — it records None (honest unknown), never a guessed value.
+    def _camp(dt, quant):
+        return {"schema_version": 2, "timestamp": 0.0, "model": "m", "quantization": quant,
+                "meter": {"name": "p", "tier": "smart_plug", "accuracy_pct": 1.0},
+                "cell_seconds": dt, "passes": 2,
+                "idle": {"rail_w": {"gpu": 0.1}, "wall_w": 7.0, "dt_s": dt},
+                "samples": [{"cell": "prefill", "model": "m", "dt_s": dt, "e_rail_marginal_j": {"gpu": 1000.0},
+                             "e_wall_marginal_j": 2000.0 + dt, "tok_in": 1, "tok_out": 1, "requests": 5},
+                            {"cell": "prefill", "model": "m", "dt_s": dt, "e_rail_marginal_j": {"gpu": 1000.0},
+                             "e_wall_marginal_j": 2010.0 + dt, "tok_in": 1, "tok_out": 1, "requests": 5}]}
+    a = tmp_path / "a.json"; a.write_text(_json.dumps(_camp(120.0, {"bits": 4, "mode": "affine"})))
+    b = tmp_path / "b.json"; b.write_text(_json.dumps(_camp(600.0, {"bits": 8, "mode": "affine"})))
+    from tokenwatt import machineid
+    from tokenwatt.machineid import MachineInfo
+    fake = MachineInfo("testmac_apple-test_16gb_macos99", "Apple Test · 16 GB · TestMac",
+                       "Apple Test", "TestMac", 16, "99")
+    monkeypatch.setattr(machineid, "detect_machine", lambda: fake)
+    res = runner.invoke(app, ["calibrate", "fit", str(a), str(b), "--out", str(tmp_path / "prof")])
+    assert res.exit_code == 0, res.output
+    prof = _json.load(open(tmp_path / "prof" / "testmac_apple-test_16gb_macos99__m.json"))
+    assert prof["quantization"] is None            # disagreeing quant -> honest None
+
+
 def test_calibrate_campaign_detects_and_passes_quantization(monkeypatch):
     # the CLI must auto-detect the served model's quantization and hand it to run_campaign
     # so the power-run record carries it (Rule 13: exercised from the command entry point).

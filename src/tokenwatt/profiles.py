@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from tokenwatt.calibration import FitResult
 from tokenwatt.machineid import MachineInfo
 
-_PROFILE_SCHEMA = 2
+_PROFILE_SCHEMA = 3      # v3 adds quantization (v2 added n_excluded); older files read those as None
 _DEFAULT_ROOT = "~/.tokenwatt/profiles"
 
 
@@ -76,7 +76,7 @@ def _read(path: str) -> Profile:
     with open(path) as f:
         data = json.load(f)
     sv = data.get("schema_version")
-    if sv not in (1, 2):
+    if sv not in (1, 2, 3):
         raise ValueError(f"unknown profile schema_version {sv!r} in {path}")
     return Profile(**data)
 

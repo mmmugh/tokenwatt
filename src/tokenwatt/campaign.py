@@ -14,44 +14,70 @@ from tokenwatt.meter import EnergyByRail, EnergyMeter
 from tokenwatt.metersource import MeterSource
 
 
-def _find_config(model: str, hf_home: str | None = None) -> str | None:
-    """Locate an mlx model's config.json from a served id or local path: a local dir
-    holds it directly; an HF repo id resolves to <hub>/models--{org}--{name}/snapshots/*/."""
-    local = os.path.expanduser(model)
-    if os.path.isdir(local):
-        cfg = os.path.join(local, "config.json")
-        return cfg if os.path.isfile(cfg) else None
+def _expand(p: str) -> str:
+    return os.path.expanduser(os.path.expandvars(p))
+
+
+def _hf_hub_dir(hf_home: str | None = None) -> str:
+    """The HF hub cache dir, mirroring huggingface_hub's precedence: explicit hf_home,
+    then HF_HUB_CACHE / legacy HUGGINGFACE_HUB_CACHE, then HF_HOME/hub, then
+    $XDG_CACHE_HOME/huggingface/hub (falling back to ~/.cache/huggingface/hub)."""
     if hf_home:
-        hub = os.path.join(os.path.expanduser(hf_home), "hub")
-    elif os.environ.get("HF_HUB_CACHE"):
-        hub = os.path.expanduser(os.environ["HF_HUB_CACHE"])
-    elif os.environ.get("HF_HOME"):
-        hub = os.path.join(os.path.expanduser(os.environ["HF_HOME"]), "hub")
-    else:
-        hub = os.path.expanduser("~/.cache/huggingface/hub")
-    safe = "models--" + model.replace("/", "--")
-    hits = sorted(glob.glob(os.path.join(hub, safe, "snapshots", "*", "config.json")))
-    return hits[0] if hits else None
+        return os.path.join(_expand(hf_home), "hub")
+    for var in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        if os.environ.get(var):
+            return _expand(os.environ[var])
+    if os.environ.get("HF_HOME"):
+        return os.path.join(_expand(os.environ["HF_HOME"]), "hub")
+    base = _expand(os.environ["XDG_CACHE_HOME"]) if os.environ.get("XDG_CACHE_HOME") else _expand("~/.cache")
+    return os.path.join(base, "huggingface", "hub")
+
+
+def _find_config(model: str, hf_home: str | None = None) -> str | None:
+    """Locate an mlx model's config.json from a served id or local path. An absolute local
+    dir holds it directly. An HF repo id resolves to <hub>/models--{org}--{name}/; the SERVED
+    revision comes from refs/main (never an arbitrary snapshot) — if that's unavailable and
+    there is exactly one snapshot we use it, but multiple ambiguous snapshots return None."""
+    local = _expand(model)
+    if os.path.isabs(local) and os.path.isdir(local):     # absolute -> a real local model dir
+        cfg = os.path.join(local, "config.json")          # (a bare "org/name" is an HF id, not a CWD path)
+        return cfg if os.path.isfile(cfg) else None
+    repo = os.path.join(_hf_hub_dir(hf_home), "models--" + model.replace("/", "--"))
+    ref = os.path.join(repo, "refs", "main")
+    if os.path.isfile(ref):
+        try:
+            commit = open(ref).read().strip()
+        except Exception:
+            commit = ""
+        cfg = os.path.join(repo, "snapshots", commit, "config.json") if commit else ""
+        if cfg and os.path.isfile(cfg):
+            return cfg
+    snaps = sorted(glob.glob(os.path.join(repo, "snapshots", "*", "config.json")))
+    return snaps[0] if len(snaps) == 1 else None           # one snapshot = unambiguous; many = don't guess
 
 
 def read_quantization(model: str, *, hf_home: str | None = None) -> dict | None:
     """Best-effort read of an mlx model's quantization from its config.json, keyed by the
     served model id or local path. Returns {bits, group_size, mode, mixed} for a quantized
-    model, {'bits': None, ... 'mode': 'none'} for a full-precision one, or None when the
-    config can't be located — an honest 'unknown', never a fabricated value. `mixed` is True
-    when the config carries per-layer overrides (mixed-precision quantization)."""
+    model, {'bits': None, ... 'mode': 'none'} ONLY when the config has no quantization block
+    (genuinely full precision), or None otherwise — an honest 'unknown', never a fabricated
+    value. A present-but-unparseable value (null/scalar) is unknown (None), not a false
+    'full precision' claim. `mixed` flags per-layer overrides (dotted keys or dict values)."""
     cfg = _find_config(model, hf_home)
     if cfg is None:
         return None
     try:
         with open(cfg) as f:
-            q = json.load(f).get("quantization")
+            data = json.load(f)
     except Exception:
         return None
+    if "quantization" not in data:
+        return {"bits": None, "group_size": None, "mode": "none", "mixed": False}   # full precision
+    q = data["quantization"]
     if not isinstance(q, dict):
-        return {"bits": None, "group_size": None, "mode": "none", "mixed": False}
-    return {"bits": q.get("bits"), "group_size": q.get("group_size"),
-            "mode": q.get("mode"), "mixed": any(isinstance(v, dict) for v in q.values())}
+        return None                                        # present but unrecognized -> unknown
+    return {"bits": q.get("bits"), "group_size": q.get("group_size"), "mode": q.get("mode"),
+            "mixed": any("." in k or isinstance(v, dict) for k, v in q.items())}
 
 
 @dataclass
