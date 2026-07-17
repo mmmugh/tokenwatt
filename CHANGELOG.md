@@ -2,7 +2,7 @@
 
 All notable changes to TokenWatt. This project adheres to [Semantic Versioning](https://semver.org).
 
-## [0.3.0] - unreleased (prepared 2026-07-16)
+## [0.3.0] - 2026-07-16
 
 The self-calibration release: measure your machine's true energy accuracy against a wall meter and
 have the proxy price from it.

@@ -3,7 +3,7 @@
 [![CI](https://github.com/mmmugh/tokenwatt/actions/workflows/ci.yml/badge.svg)](https://github.com/mmmugh/tokenwatt/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/tokenwatt)](https://pypi.org/project/tokenwatt/)
 [![Python](https://img.shields.io/pypi/pyversions/tokenwatt)](https://pypi.org/project/tokenwatt/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mmmugh/tokenwatt/blob/main/LICENSE)
 ![Platform](https://img.shields.io/badge/platform-macOS_Apple_Silicon-lightgrey)
 
 **Know what your local LLM inference actually costs you in electricity — per model, per request, on Apple Silicon. No sudo.**
